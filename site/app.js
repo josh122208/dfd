@@ -69,7 +69,7 @@ function start(data) {
   };
   document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => show(b.dataset.v)));
   banners();
-  const views = { week: renderWeek, trades: renderTrades, waivers: renderWaivers, analyzer: renderAnalyzer,
+  const views = { week: renderWeek, trades: renderTrades, matchups: renderMatchups, waivers: renderWaivers, analyzer: renderAnalyzer,
     playoffs: renderPlayoffs, league: renderLeague, players: renderPlayers, playbook: renderPlaybook, connect: renderConnect };
   for (const [k, fn] of Object.entries(views)) {
     const fail = (e) => { $("#v-" + k).innerHTML = `<div class="banner bad">This tab failed to render: ${esc(e.message)}</div>`; console.error(e); };
@@ -252,7 +252,7 @@ function renderTrades(el) {
   if (D.trades) {
     h += `<h2>Recommended trades</h2><p class="muted small">Each offer is fair by trade-value charts (FantasyCalc), improves your rest-of-season lineup, and doesn't wreck theirs, so it can actually get accepted. Acceptance odds are an estimate.</p>`;
     if (!D.trades.length) h += `<div class="card empty">No trades clear the bar right now. Check back after this week's games.</div>`;
-    D.trades.forEach((e, i) => { h += tradeCard(e, i); });
+    D.trades.forEach((e) => { h += tradeCard(e); });
   }
   if (D.buy_low && D.buy_low.length) {
     h += `<h2>Buy-low targets around the league</h2><div class="card"><div class="table-wrap"><table>
@@ -262,13 +262,18 @@ function renderTrades(el) {
   }
   if (D.meta.mode === "public") h += marketTables();
   el.innerHTML = h || `<div class="empty">Trade tools need your ESPN league.</div>`;
+  bindCopy(el);
+}
+const MSGS = [];
+function bindCopy(el) {
   el.querySelectorAll("[data-copy]").forEach((b) => (b.onclick = async () => {
-    const txt = D.trades[+b.dataset.copy].pitch.message;
+    const txt = MSGS[+b.dataset.copy];
     try { await navigator.clipboard.writeText(txt); b.textContent = "Copied ✓"; } catch { b.textContent = "Select & copy"; }
     setTimeout(() => (b.textContent = "Copy message"), 1800);
   }));
 }
-function tradeCard(e, i) {
+function tradeCard(e) {
+  const i = MSGS.push((e.pitch || {}).message || "") - 1;
   const pr = (D.profiles || {})[e.team] || {};
   const pi = e.pitch || {};
   const moodChip = pr.mood === "desperate" ? "bad" : pr.mood === "contender" ? "good" : "";
@@ -284,6 +289,12 @@ function tradeCard(e, i) {
     </div>`;
   if (e.my_drops.length || e.their_drops.length) {
     h += `<p class="small muted" style="margin:6px 0 0">${e.my_drops.length ? `You'd drop ${e.my_drops.map((p) => esc(P[p]?.name || p)).join(", ")}. ` : ""}${e.their_drops.length ? `They'd drop ${e.their_drops.map((p) => esc(P[p]?.name || p)).join(", ")}.` : ""}</p>`;
+  }
+  if (e.h2h) {
+    const x = e.h2h;
+    h += `<div class="banner info" style="margin:10px 0 0"><b>Week ${x.week} vs ${esc(ownerName(x.opp))}: your win odds ${pct(x.p_before)} → ${pct(x.p_after)}</b>
+      <span class="small muted">(you ${f1(x.my_week[0])}→${f1(x.my_week[1])}, them ${f1(x.their_week[0])}→${f1(x.their_week[1])})</span>
+      <ul class="small" style="margin:4px 0 0">${x.why.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
   }
   if (e.ladder && e.ladder.length > 1) {
     h += `<div class="ladder">${e.ladder.map((s) => `<div><b>${esc(s.label)}</b><span>${s.give.map((p) => esc(P[p]?.name || p)).join(" + ")} → ${s.get.map((p) => esc(P[p]?.name || p)).join(" + ")}<br><span class="muted">${esc(s.note)}</span></span><span class="mono small">${pct(s.fair)} · ${sign(s.my_gain)}</span></div>`).join("")}</div>`;
@@ -308,6 +319,31 @@ function marketTables() {
     </table></div></div>`;
   return t("Buy: model likes more than the market", under, "Usage, schedule and projections say these players are worth more than their trade price.")
     + t("Sell: market likes more than the model", over, "Their trade price is running ahead of their projected production.");
+}
+
+/* ---------- Matchup trades ---------- */
+function renderMatchups(el) {
+  const M = D.matchup_trades;
+  if (!M) { el.innerHTML = `<div class="empty">Matchup trades need your ESPN league.</div>`; return; }
+  let h = `<h2>Trades aimed at your next opponents</h2><p class="muted small">For each upcoming game: trades <b>with that opponent</b> that raise your win odds that week (often by sending them players on bye or in bad matchups that week), and trades with anyone else that boost your lineup for it. Every trade is still fair by trade value, keeps their rest-of-season lineup about even or better, and doesn't weaken yours, so it's an easy yes for them. Trades usually need a day or two to clear, so this starts with next week.</p>`;
+  if (!M.length) h += `<div class="card empty">No upcoming regular-season games left to target.</div>`;
+  for (const mt of M) {
+    const wp = mt.p_before, col = wp >= 0.6 ? "var(--good)" : wp <= 0.4 ? "var(--bad)" : "var(--warn)";
+    h += `<div class="card" style="border-left:4px solid ${col}"><div class="row"><h3 style="margin:0">Week ${mt.week} vs ${esc(ownerName(mt.opp))}</h3>
+      ${mt.leverage >= 0.2 ? '<span class="chip acc">high-stakes game</span>' : ""}<span class="spacer"></span>
+      <span>Win odds now <b style="color:${col}">${pct(wp)}</b> <span class="pmeta">${f1(mt.my_week)}–${f1(mt.their_week)}</span></span></div>
+      ${mt.leverage ? `<p class="small muted" style="margin:4px 0 0">Winning this one moves your playoff odds by about ${pct(mt.leverage)}.</p>` : ""}</div>`;
+    if (mt.trades.length) mt.trades.forEach((e) => { h += tradeCard(e); });
+    else h += `<div class="card small muted">No fair trade with ${esc(ownerName(mt.opp))} swings this game enough right now.</div>`;
+    if (mt.boosts.length) {
+      h += `<div class="card small"><b>Trades with other managers that also help this week</b><ul>${mt.boosts.map((b) => {
+        const e = D.trades[b.trade];
+        return `<li>${esc(ownerName(e.team))}: give ${e.give.map((p) => esc(P[p]?.name)).join(" + ")} for ${e.get.map((p) => esc(P[p]?.name)).join(" + ")}. Week ${mt.week} win odds go to <b>${pct(b.p_after)}</b>. <a href="#trades" onclick="show('trades');return false">See it on the Trades tab</a></li>`;
+      }).join("")}</ul></div>`;
+    }
+  }
+  el.innerHTML = h;
+  bindCopy(el);
 }
 
 /* ---------- Waivers ---------- */

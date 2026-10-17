@@ -258,6 +258,12 @@ def main():
             data["buy_low"] = buys
             finder = trades.TradeFinder(S, P, strength, teams, me, prof)
             data["trades"] = finder.run([s["pid"] for s in sells])
+            data["matchup_trades"] = finder.run_matchups((sim.get("me") or {}).get("games", []), data["trades"])
+            for mt in data["matchup_trades"]:
+                for e in mt["trades"]:
+                    lists.update(e["give"] + e["get"] + e["my_drops"] + e["their_drops"])
+                    for st in e.get("ladder", []):
+                        lists.update(st["give"] + st["get"])
             for e in data["trades"]:
                 lists.update(e["give"] + e["get"] + e["my_drops"] + e["their_drops"])
                 for st in e.get("ladder", []):

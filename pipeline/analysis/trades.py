@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 
+from .lineup import phi
 from .persuasion import pitch
 
 POS_GROUPS = ("QB", "RB", "WR", "TE")
@@ -196,27 +197,34 @@ class TradeFinder:
                 "p_accept": round(p_accept, 3), "give_value": round(give_v), "get_value": round(get_v),
                 "my_drops": my_drops, "their_drops": th_drops, "score": round(my_gain * p_accept, 3)}
 
-    def run(self, sell_ids, limit=12):
-        self.base = {tid: self.st.total(t["pids"], tid) for tid, t in self.teams.items()}
+    def _my_candidates(self, sell_ids):
         mine = [p for p in self.teams[self.me]["pids"] if p in self.P and self.P[p]["pos"] in POS_GROUPS]
         mine.sort(key=self._value, reverse=True)
-        my_c = list(dict.fromkeys(mine[:10] + [p for p in sell_ids if p in mine]))
+        return list(dict.fromkeys(mine[:10] + [p for p in sell_ids if p in mine]))
+
+    def _combos(self, tid, my_c):
+        """1-for-1, 2-for-1, 1-for-2 and 2-for-2 packages with one manager, pre-filtered to sane value ratios."""
+        theirs = [p for p in self.teams[tid]["pids"] if p in self.P and self.P[p]["pos"] in POS_GROUPS]
+        theirs.sort(key=self._value, reverse=True)
+        th_c = theirs[:10]
+        combos = [((a,), (b,)) for a in my_c for b in th_c]
+        combos += [(pair, (b,)) for pair in itertools.combinations(my_c, 2) for b in th_c]
+        combos += [((a,), pair) for a in my_c for pair in itertools.combinations(th_c, 2)]
+        combos += [(p1, p2) for p1 in itertools.combinations(my_c[:6], 2) for p2 in itertools.combinations(th_c[:6], 2)]
+        for give, get in combos:
+            gv = sum(self._value(p) for p in give)
+            tv = sum(self._value(p) for p in get)
+            if tv > 0 and 0.8 <= gv / tv <= 1.45:
+                yield give, get
+
+    def run(self, sell_ids, limit=12):
+        self.base = {tid: self.st.total(t["pids"], tid) for tid, t in self.teams.items()}
+        my_c = self._my_candidates(sell_ids)
         results = []
         for tid, t in self.teams.items():
             if tid == self.me:
                 continue
-            theirs = [p for p in t["pids"] if p in self.P and self.P[p]["pos"] in POS_GROUPS]
-            theirs.sort(key=self._value, reverse=True)
-            th_c = theirs[:10]
-            combos = [((a,), (b,)) for a in my_c for b in th_c]
-            combos += [(pair, (b,)) for pair in itertools.combinations(my_c, 2) for b in th_c]
-            combos += [((a,), pair) for a in my_c for pair in itertools.combinations(th_c, 2)]
-            combos += [(p1, p2) for p1 in itertools.combinations(my_c[:6], 2) for p2 in itertools.combinations(th_c[:6], 2)]
-            for give, get in combos:
-                gv = sum(self._value(p) for p in give)
-                tv = sum(self._value(p) for p in get)
-                if tv <= 0 or not (0.8 <= gv / tv <= 1.45):
-                    continue
+            for give, get in self._combos(tid, my_c):
                 ev = self.evaluate(tid, give, get)
                 if ev["my_gain"] >= 0.4 and ev["fair"] >= 0.93 and ev["p_accept"] >= 0.3 and ev["their_gain"] >= -1.5:
                     results.append(ev)
@@ -250,6 +258,103 @@ class TradeFinder:
             else:
                 seen[e["team"]] = e
         return picked
+
+    def run_matchups(self, games, general, n_weeks=4, per_opp=3):
+        """Trades aimed at a specific head-to-head week: with that opponent (send them players who are on bye,
+        hurt or in bad matchups that week while improving their season) and with anyone (boost your lineup that
+        week). Every deal must still be fair by value, help their season-long lineup, and not hurt yours."""
+        sd = 22 * 2 ** 0.5
+        me_t = self.teams[self.me]
+        my_c = self._my_candidates([])
+        out = []
+        # Trades take a day or two to clear review, so aim at next week onward.
+        upcoming = [g for g in games if g["week"] > self.S["week"] and g["week"] in self.st.idx
+                    and g["opp"] in self.teams][:n_weeks]
+        my_weekly = self.st.weekly(me_t["pids"], played=True)
+        for g in upcoming:
+            tid, w = g["opp"], g["week"]
+            wi = self.st.idx[w]
+            th_t = self.teams[tid]
+            th_weekly = self.st.weekly(th_t["pids"], played=True)
+            p0 = phi((my_weekly[wi] - th_weekly[wi]) / sd)
+            lev = g.get("leverage") or 0
+            cands = []
+            for give, get in self._combos(tid, my_c):
+                ev = self.evaluate(tid, give, get)
+                if ev["fair"] < 0.93 or ev["their_gain"] < -0.5 or ev["my_gain"] < -0.3 or ev["p_accept"] < 0.35:
+                    continue
+                my_new, _ = self._after(me_t["pids"], give, get, len(me_t["pids"]))
+                th_new, _ = self._after(th_t["pids"], get, give, len(th_t["pids"]))
+                m1 = self.st.weekly(my_new, played=True)[wi]
+                t1 = self.st.weekly(th_new, played=True)[wi]
+                p1 = phi((m1 - t1) / sd)
+                if p1 - p0 < 0.03:
+                    continue
+                ev["h2h"] = {"week": w, "opp": tid, "p_before": round(p0, 3), "p_after": round(p1, 3),
+                             "my_week": [round(float(my_weekly[wi]), 1), round(float(m1), 1)],
+                             "their_week": [round(float(th_weekly[wi]), 1), round(float(t1), 1)],
+                             "leverage": lev, "why": self._h2h_why(give, get, w)}
+                ev["h2h"]["why"].insert(0, f"Week {w} swing: your lineup {m1 - my_weekly[wi]:+.1f}, theirs "
+                                           f"{t1 - th_weekly[wi]:+.1f} projected points.")
+                ev["score"] = round((ev["my_gain"] + 30 * (p1 - p0) * (1 + 2 * lev)) * ev["p_accept"], 3)
+                cands.append(ev)
+            cands.sort(key=lambda e: -e["score"])
+            picked, used = [], set()
+            for e in cands:
+                key = frozenset(e["give"]) | frozenset(e["get"])
+                if any(p in used for p in e["get"]) or key in used:
+                    continue
+                picked.append(e)
+                used.update(e["get"])
+                used.add(key)
+                if len(picked) >= per_opp:
+                    break
+            for e in picked:
+                e["ladder"] = self.ladder(e)
+                e["pitch"] = pitch(e, self.P, self.prof, self.teams, self.me, self.S)
+                h = e["h2h"]
+                e["pitch"]["talking_points"].insert(0, (
+                    f"You play {self.prof[tid]['owner']} in Week {w}: this moves your win odds that week from "
+                    f"{h['p_before']:.0%} to {h['p_after']:.0%}. " + " ".join(h["why"][:2])))
+                e["pitch"]["objections"].insert(0, {
+                    "if": f"\"Isn't this just so you beat me in Week {w}?\"",
+                    "say": f"Be straight: it helps you the rest of the way (+{e['their_gain']:.1f} pts a week for your "
+                           "lineup by my math) and it helps me too. That's why it's a fair trade."})
+            # Best general offers (any manager) for this week, if they also lift your lineup that week.
+            boosts = []
+            for e in general:
+                if e["team"] == tid:
+                    continue
+                my_new, _ = self._after(me_t["pids"], e["give"], e["get"], len(me_t["pids"]))
+                m1 = self.st.weekly(my_new, played=True)[wi]
+                p1 = phi((m1 - th_weekly[wi]) / sd)
+                if p1 - p0 >= 0.03:
+                    boosts.append({"trade": general.index(e), "p_after": round(p1, 3), "my_week": round(float(m1), 1)})
+            boosts.sort(key=lambda b: -b["p_after"])
+            out.append({"week": w, "opp": tid, "p_before": round(p0, 3), "leverage": lev,
+                        "my_week": round(float(my_weekly[wi]), 1), "their_week": round(float(th_weekly[wi]), 1),
+                        "trades": picked, "boosts": boosts[:3]})
+        return out
+
+    def _h2h_why(self, give, get, week):
+        """Plain-English reasons the trade swings that specific week."""
+        why = []
+
+        def wk(pid):
+            return next((v for w, v in self.P[pid].get("ros", []) if w == week), 0.0)
+        for p in give:  # what they receive
+            r = self.P[p]
+            if r.get("bye_week") == week:
+                why.append(f"{r['name']} is on bye in Week {week}, so he scores 0 for them that week.")
+            elif wk(p) < 0.5:
+                why.append(f"{r['name']} isn't projected to play in Week {week}.")
+            elif wk(p) < 0.6 * (r.get("ros_ppg") or 0):
+                why.append(f"{r['name']} projects only {wk(p):.1f} that week (tough matchup or injury).")
+        for p in get:  # what they lose
+            r = self.P[p]
+            if wk(p) >= 1.15 * (r.get("ros_ppg") or 99) or wk(p) >= 15:
+                why.append(f"{r['name']} projects {wk(p):.1f} that week, and he'll be on your side.")
+        return why
 
     def ladder(self, e):
         """Opening ask, the fair deal, and the most you should give before walking away."""
