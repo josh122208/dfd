@@ -9,52 +9,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -q -r requirements.txt
       - shell: bash {0}
         env:
           ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
         run: |
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-          {
-          for U in \
-            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit=5" \
-            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?team=phi&limit=5" \
-            "https://site.api.espn.com/apis/fantasy/v2/games/ffl/news/players?playerId=4241479&limit=5" \
-            "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/news/players?playerId=4241479" \
-            "https://news.google.com/rss/search?q=%22Sirianni%22+%22DeVonta+Smith%22&hl=en-US&gl=US&ceid=US:en" \
-            "https://www.rotowire.com/rss/news.php?sport=NFL" \
-            "https://www.cbssports.com/rss/headlines/nfl/" \
-            "https://www.espn.com/espn/rss/nfl/news" ; do
-            echo "== $U"; curl -sS -A "$UA" -L -o body -w "%{http_code} %{content_type} %{size_download}\n" "$U"; head -c 700 body | tr '\n' ' '; echo; echo
-          done
-          echo "== TRANSACTIONS schema"
-          curl -sS -A "$UA" -b "espn_s2=$ESPN_S2; SWID=$ESPN_SWID" -o tx.json "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026/segments/0/leagues/$ESPN_LEAGUE_ID?view=mTransactions2&scoringPeriodId=4"
-          python3 - <<'PY'
-          import json, collections
-          d = json.load(open("tx.json"))
-          tx = d.get("transactions", [])
-          print("n", len(tx), "top keys", sorted(d.keys()))
-          print("tx keys", sorted(set(k for t in tx for k in t)))
-          print("types", collections.Counter((t.get("type"), t.get("status")) for t in tx))
-          print("item keys", sorted(set(k for t in tx for i in t.get("items", []) for k in i)))
-          print("item types", collections.Counter(i.get("type") for t in tx for i in t.get("items", [])))
-          ex = next((t for t in tx if t.get("type", "").startswith("TRADE")), tx[0] if tx else {})
-          print("example (ids only)", json.dumps({k: v for k, v in ex.items() if k not in ("memberId",)}, default=str)[:900])
-          PY
-          } > probe.txt 2>&1
-          python3 - >> tb.txt <<'PY' || true
-          import json, os, collections
+          python -m pipeline.build --out out > all.log 2>&1; echo "exit $?" > tb.txt
+          grep -E "ERROR|espn league|player news|Traceback|Error|done in|source failed" all.log | sed -E 's/\{[0-9A-Fa-f-]{30,}\}/{SWID}/g' | cut -c1-220 | tail -25 >> tb.txt
+          python3 - >> tb.txt 2>&1 <<'PY'
+          import json, os
           from pipeline import crypto
           d = json.loads(crypto.decrypt(open("out/data.enc.json").read(), os.environ["SITE_PASSWORD"]))
           P = d["players"]
           notes = [n for r in P.values() for n in r.get("notes", [])]
-          keys = ["is O", "is IR", "Pass protection", "Run-blocking", "blitzes", "Play-action", "stacks the box", "Handcuff", "Coach talk"]
+          keys = ["is O", "is IR", "is D", "Pass protection", "Run-blocking", "blitzes", "Play-action", "stacks the box", "Handcuff", "Coach talk"]
           print({k: sum(1 for n in notes if k in n) for k in keys})
+          print("players with coach quotes:", sum(1 for r in P.values() if (r.get("news") or {}).get("quotes")))
           print("tendency traits per team:", [len((p.get("tendency") or {}).get("traits", [])) for p in d.get("profiles", {}).values()])
           print("season:", {k: d.get("season", {}).get(k) for k in ("odds", "proj_wins", "proj_losses", "wins_needed", "mode")})
           print("waivers:", len(d["waivers"]["adds"]), "stashes:", len(d["waivers"].get("stashes", [])), "rank:", d["waivers"].get("waiver_rank"))
           print("trades:", len(d.get("trades", [])), "sources:", d["meta"]["sources"])
           PY
           git config user.name diag-bot && git config user.email diag@users.noreply.github.com
-          git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f probe.txt && git commit -qm probe && git push -qf origin diag-out
+          git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f tb.txt && git commit -qm tb && git push -qf origin diag-out
