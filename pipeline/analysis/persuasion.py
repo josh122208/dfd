@@ -152,6 +152,10 @@ def pitch(e, P, prof, teams, me, S):
     for pid in get:
         r = P[pid]
         u = r.get("usage") or {}
+        ir = r.get("inj_risk") or {}
+        if ir.get("level") == "High":
+            talking.append(f"Know the risk: {r['name']} is high injury risk ({'; '.join(ir.get('why', [])[:2])}). "
+                           "Make sure your bench can cover if he misses time.")
         if u.get("exp_ppg") and u.get("ppg") and u["exp_ppg"] > u["ppg"] + 1.5:
             talking.append(f"Don't mention it, but {r['name']}'s usage is worth {u['exp_ppg']:.1f}/game vs {u['ppg']:.1f} "
                            "scored. That's the edge you're buying.")
@@ -162,6 +166,11 @@ def pitch(e, P, prof, teams, me, S):
             objections.append({"if": f"\"{r['name']} is just TD-lucky\"",
                                "say": f"Point to volume: {u.get('targets_pg') or u.get('carries_pg') or 0:.1f} "
                                       f"{'targets' if u.get('targets_pg') else 'carries'} a game, and he's the guy near the goal line."})
+        ir = r.get("inj_risk") or {}
+        if ir.get("level") in ("Medium", "High") and ir.get("why"):
+            objections.append({"if": f"\"{r['name']} is always hurt\"",
+                               "say": "He's playing now and the price reflects the risk. Offer a small add-on rather than "
+                                      "arguing the injury history."})
         if r.get("injury") in ("Q", "D"):
             objections.append({"if": f"\"Isn't {r['name']} hurt?\"",
                                "say": "Acknowledge it, then offer to wait until his status is clear, or add a small piece for the risk."})

@@ -16,7 +16,7 @@ from . import crypto
 from .analysis import extras, lineup, trades
 from .analysis.persuasion import PLAYBOOK
 from .config import Config
-from .model import context, players as pl, projections, values
+from .model import context, injury, players as pl, projections, values
 from .sources import espn, market, nflverse
 from .util import log, norm_team, r1, safe
 
@@ -172,6 +172,7 @@ def main():
          "week": week, "ppr": ppr, "ros_weeks": ros_weeks, "playoff_weeks": playoff_weeks, "sleeper_proj": sleeper_proj,
          "sleeper_players": sp, "slots": slots, "teams": n_teams,
          "trade_deadline": (league or {}).get("trade_deadline")}
+    S["inj_hist"] = injury.history(t, reg, usage, sched, week)
     P = projections.project(S)
     # Every analysis below indexes P by roster pid; drop anything that couldn't be projected (non-fantasy positions).
     for tm in teams:
@@ -228,8 +229,16 @@ def main():
         data["sell_high"] = sells
         lists.update(my["pids"])
         if league and len(teams) > 1:
+            # Simulate the season first: each team's playoff odds decide which weeks its trades should help.
+            sim = extras.season_sim(teams, league["schedule"], strength, reg_weeks, week, league["playoff_teams"], me)
+            odds = sim["odds"]
+            lev = {me: {g["week"]: g["leverage"] for g in sim.get("me", {}).get("games", [])}}
+            strength.push_weights(odds, lev, reg_weeks)
             prof = trades.team_profiles(teams, P, strength, me, slots, week, sched_byes)
+            for p_ in prof.values():
+                p_["playoff_odds"] = odds.get(p_["id"])
             data["profiles"] = prof
+            data["season"] = season_report(sim.get("me"), my["pids"], P, strength, reg_weeks, prof, byes)
             buys = trades.buy_low(P, owner_of, me)
             data["buy_low"] = buys
             finder = trades.TradeFinder(S, P, strength, teams, me, prof)
@@ -239,15 +248,12 @@ def main():
                 for st in e.get("ladder", []):
                     lists.update(st["give"] + st["get"])
             lists.update(b["pid"] for b in buys)
-            odds = extras.playoff_odds(teams, league["schedule"], strength, reg_weeks, week, league["playoff_teams"])
-            for p_ in prof.values():
-                p_["playoff_odds"] = odds.get(p_["id"])
         free = [pid for pid, r in P.items() if pid not in owner_of and r["pos"] in ("QB", "RB", "WR", "TE", "K", "DST")
                 and (not league or espn_status.get(pid) in (None, "FREEAGENT", "WAIVERS"))
                 and (league or (r.get("pct_owned") is not None and r["pct_owned"] < 50))]
         my_team = next(tm for tm in teams if tm["id"] == me)
         data["waivers"] = extras.waivers(P, free, my["pids"], strength, week, trending,
-                                         (league or {}).get("faab_budget"), my_team.get("faab_left"), slots)
+                                         (league or {}).get("faab_budget"), my_team.get("faab_left"), slots, me)
         for w in data["waivers"]["adds"]:
             lists.update([w["pid"], w["drop"]])
     else:
@@ -296,6 +302,53 @@ def main():
              data["meta"]["mode"], week)
 
 
+def season_report(me_sim, my_pids, P, strength, reg_weeks, prof, byes):
+    """Your season outlook: odds, wins needed, must-win weeks, bye crunches, and how the advice adapts."""
+    if not me_sim:
+        return None
+    weeks = strength.weeks
+    weekly = strength.weekly(my_pids, played=True)
+    reg = [(w, weekly[i]) for i, w in enumerate(weeks) if w <= reg_weeks]
+    avg = float(np.mean([v for _, v in reg])) if reg else 0
+    crunch = []
+    for w, v in reg:
+        if v < avg * 0.9:
+            out = [p for p in my_pids if P[p].get("bye_week") == w and (P[p].get("ros_ppg") or 0) >= 7]
+            crunch.append({"week": w, "proj": round(float(v), 1), "below_avg": round(avg - float(v), 1),
+                           "on_bye": out})
+    odds = me_sim["odds"]
+    mode = "push" if odds < 0.35 else "bubble" if odds < 0.7 else "contender"
+    pw = 1.3 * min(1.0, odds / 0.5)
+    games = me_sim["games"]
+    for g in games:
+        g["opp_name"] = prof.get(g["opp"], {}).get("owner")
+    key = max(games, key=lambda g: g.get("leverage", 0)) if games else None
+    tips = []
+    tips.append(f"Projected finish: {me_sim['proj_wins']:.0f}-{me_sim['proj_losses']:.0f}. The last playoff spot usually "
+                f"takes about {me_sim['wins_needed']:.0f} wins, so you need roughly {me_sim['need_more']:.0f} more in "
+                f"{me_sim['remaining']} games.")
+    if mode != "contender":
+        tips.append(f"Advice is in {'playoff-push' if mode == 'push' else 'bubble'} mode: trades and pickups favor points in "
+                    f"the regular-season weeks that swing your odds most, and playoff-week points count {pw / 1.3:.0%} as "
+                    f"much as usual until you're likelier to get there.")
+    if key:
+        tips.append(f"Biggest swing: Week {key['week']} vs {key.get('opp_name') or 'your opponent'}. A win puts your odds at "
+                    f"{key['odds_if_win']:.0%}, a loss at {key['odds_if_lose']:.0%}.")
+    if me_sim.get("schedule_rank"):
+        r = me_sim["schedule_rank"]
+        tips.append(f"Your remaining schedule is the {_ord(r)}-toughest in the league by opponents' projected lineups.")
+    for c in crunch[:2]:
+        names = ", ".join(P[p]["name"] for p in c["on_bye"]) or "several starters"
+        tips.append(f"Week {c['week']} is a crunch ({c['below_avg']:.0f} pts below your average) with {names} on bye. "
+                    "Plan a pickup or trade for depth before then.")
+    return dict(me_sim, mode=mode, playoff_week_weight=round(pw / 1.3, 2), crunch=crunch, avg_weekly=round(avg, 1),
+                tips=tips)
+
+
+def _ord(n):
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
 def _matchup_period(league, week):
     # Regular season matchup periods line up with NFL weeks in nearly every ESPN league.
     return week if week <= league["reg_weeks"] else league["reg_weeks"] + 1 + (week - league["reg_weeks"] - 1)
@@ -312,7 +365,8 @@ PUBLIC = ("pid", "name", "pos", "team", "age", "headshot", "opp", "home", "impli
           "sd", "sources", "notes", "injury", "injury_detail", "injury_notes", "locked", "actual", "kickoff", "weather",
           "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "fc_value", "fc_estimated",
           "fc_trend30", "model_value", "edge", "fp_ros_overall", "fp_ros_pos_rank", "fp_week_rank", "pct_owned",
-          "pct_change", "season_pts", "pts_rank", "ros_rank", "week_rank", "on_team", "slot", "usage", "depth")
+          "pct_change", "season_pts", "pts_rank", "ros_rank", "week_rank", "on_team", "slot", "usage", "depth",
+          "inj_risk")
 
 
 def _public(r):

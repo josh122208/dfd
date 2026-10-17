@@ -4,9 +4,9 @@ import numpy as np
 POS_GROUPS = ("QB", "RB", "WR", "TE")
 
 
-def waivers(players, free_ids, my_pids, strength, week, trending, faab_budget, faab_left, slots):
+def waivers(players, free_ids, my_pids, strength, week, trending, faab_budget, faab_left, slots, me=None):
     """Rank free agents by how much they improve MY lineup, after dropping my least useful player."""
-    base = strength.total(my_pids)
+    base = strength.total(my_pids, me)
     base_week = strength.weekly(my_pids)
     i_now = strength.idx.get(week)
     droppable = sorted([p for p in my_pids if p in players], key=lambda p: (players[p].get("vorp", 0),
@@ -31,7 +31,7 @@ def waivers(players, free_ids, my_pids, strength, week, trending, faab_budget, f
         if d is None:
             continue
         new = [p for p in my_pids if p != d] + [pid]
-        gain = (strength.total(new) - base) / n
+        gain = (strength.total(new, me) - base) / n
         nw = strength.weekly(new)
         gain_now = float(nw[i_now] - base_week[i_now]) if i_now is not None else 0.0
         tr = trending.get(r.get("sleeper_id") or "", {})
@@ -117,20 +117,24 @@ def playoff_schedule(players, sched, dvp, playoff_weeks, pids):
     return out
 
 
-def playoff_odds(teams, schedule, strength, reg_weeks, week, playoff_teams, sims=4000, seed=7):
-    """Monte Carlo the rest of the fantasy regular season with each team's projected weekly lineup points."""
+def season_sim(teams, schedule, strength, reg_weeks, week, playoff_teams, me=None, sims=5000, seed=7):
+    """Monte Carlo the rest of the fantasy regular season with each team's projected weekly lineup points.
+
+    Returns playoff odds for everyone and, for your team: projected record, wins likely needed, each remaining
+    matchup with win odds, and leverage (how much winning that week moves your playoff odds)."""
     rng = np.random.default_rng(seed)
     ids = [t["id"] for t in teams]
     ix = {t: i for i, t in enumerate(ids)}
     wins = np.array([t["wins"] + 0.5 * t["ties"] for t in teams], dtype=float)
     pf = np.array([t["points_for"] for t in teams], dtype=float)
-    weekly = {t["id"]: strength.weekly(t["pids"]) for t in teams}
+    weekly = {t["id"]: strength.weekly(t["pids"], played=True) for t in teams}
     games = [g for g in schedule if g["period"] and week <= g["period"] <= reg_weeks and g["home"] is not None
              and g["away"] is not None]
     if not games:
-        return {}
+        return {"odds": {}}
     W = np.tile(wins, (sims, 1))
     P = np.tile(pf, (sims, 1))
+    my_results, my_games = {}, []
     for g in games:
         wi = strength.idx.get(g["period"])
         h, a = ix.get(g["home"]), ix.get(g["away"])
@@ -143,9 +147,46 @@ def playoff_odds(teams, schedule, strength, reg_weeks, week, playoff_teams, sims
         W[:, a] += sa > sh
         P[:, h] += sh
         P[:, a] += sa
+        if me in (g["home"], g["away"]):
+            mine_home = g["home"] == me
+            won = (sh > sa) if mine_home else (sa > sh)
+            my_results[g["period"]] = won
+            opp = g["away"] if mine_home else g["home"]
+            my_games.append({"week": g["period"], "opp": opp,
+                             "me": round(float(mh if mine_home else ma), 1), "them": round(float(ma if mine_home else mh), 1),
+                             "win_prob": round(float(won.mean()), 3)})
     key = W * 10000 + P  # wins first, points for as the tiebreaker
     order = np.argsort(-key, axis=1)
-    made = np.zeros(len(ids))
+    made = np.zeros((sims, len(ids)), dtype=bool)
     for k in range(min(playoff_teams, len(ids))):
-        np.add.at(made, order[:, k], 1)
-    return {tid: round(float(made[ix[tid]] / sims), 3) for tid in ids}
+        made[np.arange(sims), order[:, k]] = True
+    odds = {tid: round(float(made[:, ix[tid]].mean()), 3) for tid in ids}
+    out = {"odds": odds}
+    if me in ix:
+        i = ix[me]
+        last_in = W[np.arange(sims), order[:, min(playoff_teams, len(ids)) - 1]]
+        need = float(np.median(last_in))
+        remaining = len(my_games)
+        mm = made[:, i]
+        for g in my_games:
+            won = my_results[g["week"]]
+            p_w = mm[won].mean() if won.any() else 0.0
+            p_l = mm[~won].mean() if (~won).any() else 0.0
+            g["leverage"] = round(float(p_w - p_l), 3)
+            g["odds_if_win"], g["odds_if_lose"] = round(float(p_w), 3), round(float(p_l), 3)
+        # Strength of remaining schedule: average projected opponent points, ranked against every team's slate.
+        opp_pts = {}
+        for g in games:
+            wi = strength.idx.get(g["period"])
+            if wi is None:
+                continue
+            for a, b in ((g["home"], g["away"]), (g["away"], g["home"])):
+                opp_pts.setdefault(a, []).append(weekly[b][wi])
+        avg = {t: np.mean(v) for t, v in opp_pts.items() if v}
+        rank = sorted(avg, key=lambda t: -avg[t]).index(me) + 1 if me in avg else None
+        out["me"] = {"odds": odds[me], "proj_wins": round(float(W[:, i].mean()), 1),
+                     "proj_losses": round(float(teams[i]["losses"] + remaining - (W[:, i].mean() - wins[i])), 1),
+                     "wins_now": float(wins[i]), "losses_now": int(teams[i]["losses"]), "remaining": remaining,
+                     "wins_needed": need, "need_more": max(0.0, round(need - wins[i], 1)),
+                     "schedule_rank": rank, "games": sorted(my_games, key=lambda g: g["week"])}
+    return out

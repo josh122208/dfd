@@ -119,7 +119,8 @@ function kick(r) {
 function pn(pid, extra = "") {
   const r = P[pid];
   if (!r) return `<span class="muted">${esc(pid || "—")}</span>`;
-  return `<a href="#" class="pname" data-pid="${esc(pid)}">${esc(r.name)}</a>${inj(r)} <span class="pmeta">${esc(r.pos)} ${esc(r.team || "")}${extra}</span>`;
+  const risk = r.inj_risk && r.inj_risk.level === "High" ? `<span class="risk" title="High injury risk: ${esc((r.inj_risk.why || []).join("; "))}">⚕</span>` : "";
+  return `<a href="#" class="pname" data-pid="${esc(pid)}">${esc(r.name)}</a>${inj(r)}${risk} <span class="pmeta">${esc(r.pos)} ${esc(r.team || "")}${extra}</span>`;
 }
 function range(r, max = 30) {
   if (!r || r.proj == null) return "";
@@ -144,7 +145,7 @@ document.addEventListener("click", (e) => {
 function renderWeek(el) {
   if (!D.lineup) return renderRankings(el);
   const L = D.lineup;
-  let h = "";
+  let h = seasonCard();
   if (L.matchup) {
     const wp = L.matchup.win_prob;
     h += `<div class="card"><div class="matchup">
@@ -189,6 +190,32 @@ function renderWeek(el) {
     h += `</div>`;
   }
   el.innerHTML = h;
+}
+
+function seasonCard() {
+  const S = D.season;
+  if (!S) return "";
+  const modeChip = { push: ["bad", "Playoff push"], bubble: ["warn", "On the bubble"], contender: ["good", "Contender"] }[S.mode] || ["", ""];
+  const maxLev = Math.max(...S.games.map((g) => g.leverage || 0), 0.01);
+  const strip = S.games.map((g) => {
+    const wp = g.win_prob, col = wp >= 0.6 ? "var(--good)" : wp <= 0.4 ? "var(--bad)" : "var(--warn)";
+    const big = (g.leverage || 0) >= maxLev * 0.9;
+    return `<div class="wkbox${big ? " big" : ""}" title="Win: odds ${pct(g.odds_if_win)} · Lose: ${pct(g.odds_if_lose)}">
+      <div class="small muted">Wk ${g.week}${big ? " ★" : ""}</div><div class="small">${esc(g.opp_name || "")}</div>
+      <div style="color:${col};font-weight:700">${pct(wp)}</div><div class="pmeta">${f1(g.me)}–${f1(g.them)}</div></div>`;
+  }).join("");
+  return `<div class="card"><div class="row"><h3 style="margin:0">Season outlook</h3><span class="chip ${modeChip[0]}">${modeChip[1]}</span><span class="spacer"></span>
+      <span class="small muted">${f0(S.wins_now)}-${f0(S.losses_now)} now</span></div>
+    <div class="stats" style="margin:10px 0">
+      <div><b>${pct(S.odds)}</b>playoff odds</div>
+      <div><b>${f1(S.proj_wins)}–${f1(S.proj_losses)}</b>projected record</div>
+      <div><b>${f0(S.wins_needed)}</b>wins usually needed</div>
+      <div><b>${f0(S.need_more)} of ${S.remaining}</b>wins still needed</div>
+      ${S.schedule_rank ? `<div><b>#${S.schedule_rank}</b>toughest schedule left</div>` : ""}
+    </div>
+    <div class="wkstrip">${strip}</div>
+    <p class="small muted" style="margin:6px 0 0">Win odds each week from projected lineups. ★ = the games that swing your playoff odds most.</p>
+    <ul class="notes" style="color:var(--text);margin-top:8px">${(S.tips || []).map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>`;
 }
 
 function renderRankings(el) {
@@ -469,13 +496,13 @@ function renderLeague(el) {
 /* ---------- Players ---------- */
 function renderPlayers(el) {
   let q = "", pos = "ALL", sortKey = "ros_ppg", dir = -1;
-  const cols = [["name", "Player"], ["proj", "Wk"], ["ros_ppg", "ROS/g"], ["fc_value", "Market"], ["model_value", "Model"], ["snap", "Snap%"], ["tgt", "Tgt%"], ["ppg", "Pts/g"], ["exp", "Exp/g"], ["owner", "Team"]];
-  const val = (r, k) => ({ snap: r.usage?.snap, tgt: r.usage?.tgt_share, ppg: r.usage?.ppg, exp: r.usage?.exp_ppg, owner: r.on_team == null ? "" : ownerName(r.on_team) }[k] ?? r[k]);
+  const cols = [["name", "Player"], ["proj", "Wk"], ["ros_ppg", "ROS/g"], ["fc_value", "Market"], ["model_value", "Model"], ["snap", "Snap%"], ["tgt", "Tgt%"], ["ppg", "Pts/g"], ["exp", "Exp/g"], ["risk", "Inj risk"], ["owner", "Team"]];
+  const val = (r, k) => ({ snap: r.usage?.snap, tgt: r.usage?.tgt_share, ppg: r.usage?.ppg, exp: r.usage?.exp_ppg, risk: r.inj_risk?.exp_missed_6wk, owner: r.on_team == null ? "" : ownerName(r.on_team) }[k] ?? r[k]);
   const draw = () => {
     const rows = Object.values(P).filter((r) => (pos === "ALL" || r.pos === pos) && (!q || r.name.toLowerCase().includes(q)))
       .sort((a, b) => { const x = val(a, sortKey), y = val(b, sortKey); if (typeof x === "string" || typeof y === "string") return dir * String(x ?? "").localeCompare(String(y ?? "")); return dir * ((x ?? -1e9) - (y ?? -1e9)); }).slice(0, 200);
-    $("#ptable", el).innerHTML = `<tr>${cols.map(([k, l], i) => `<th class="sort ${i > 0 && k !== "owner" ? "num" : ""} ${["snap", "tgt", "exp", "model_value", "owner"].includes(k) ? "hide-sm" : ""}" data-k="${k}">${l}${k === sortKey ? (dir < 0 ? " ↓" : " ↑") : ""}</th>`).join("")}</tr>
-      ${rows.map((r) => `<tr class="click" data-pid="${esc(r.pid)}"><td>${pn(r.pid)}</td><td class="num">${f1(r.proj)}</td><td class="num">${f1(r.ros_ppg)}</td><td class="num">${f0(r.fc_value)}</td><td class="num hide-sm">${f0(r.model_value)}</td><td class="num hide-sm">${pct(r.usage?.snap)}</td><td class="num hide-sm">${pct(r.usage?.tgt_share)}</td><td class="num">${f1(r.usage?.ppg)}</td><td class="num hide-sm">${f1(r.usage?.exp_ppg)}</td><td class="small hide-sm">${r.on_team === ME ? '<span class="chip acc">you</span>' : r.on_team == null ? (D.meta.mode === "league" ? '<span class="chip good">FA</span>' : "") : esc(ownerName(r.on_team))}</td></tr>`).join("")}`;
+    $("#ptable", el).innerHTML = `<tr>${cols.map(([k, l], i) => `<th class="sort ${i > 0 && k !== "owner" ? "num" : ""} ${["snap", "tgt", "exp", "model_value", "owner", "risk"].includes(k) ? "hide-sm" : ""}" data-k="${k}">${l}${k === sortKey ? (dir < 0 ? " ↓" : " ↑") : ""}</th>`).join("")}</tr>
+      ${rows.map((r) => `<tr class="click" data-pid="${esc(r.pid)}"><td>${pn(r.pid)}</td><td class="num">${f1(r.proj)}</td><td class="num">${f1(r.ros_ppg)}</td><td class="num">${f0(r.fc_value)}</td><td class="num hide-sm">${f0(r.model_value)}</td><td class="num hide-sm">${pct(r.usage?.snap)}</td><td class="num hide-sm">${pct(r.usage?.tgt_share)}</td><td class="num">${f1(r.usage?.ppg)}</td><td class="num hide-sm">${f1(r.usage?.exp_ppg)}</td><td class="num hide-sm">${r.inj_risk ? `<span class="chip ${r.inj_risk.level === "High" ? "bad" : r.inj_risk.level === "Medium" ? "warn" : ""}">${esc(r.inj_risk.level)}</span>` : "–"}</td><td class="small hide-sm">${r.on_team === ME ? '<span class="chip acc">you</span>' : r.on_team == null ? (D.meta.mode === "league" ? '<span class="chip good">FA</span>' : "") : esc(ownerName(r.on_team))}</td></tr>`).join("")}`;
     el.querySelectorAll("th.sort").forEach((th) => (th.onclick = () => { const k = th.dataset.k; dir = k === sortKey ? -dir : (k === "name" || k === "owner" ? 1 : -1); sortKey = k; draw(); }));
   };
   el.innerHTML = `<h2>All players</h2><div class="row"><input type="search" id="q" placeholder="Search players" style="flex:1;min-width:160px">
@@ -495,6 +522,8 @@ function renderPlaybook(el) {
     <p><b>Floor/ceiling</b> are the 10th and 90th percentiles from each player's weekly volatility.</p>
     <p><b>Rest of season</b> projects every remaining week to the end of your fantasy playoffs (byes zeroed, IR stints respected); playoff weeks count 1.3×.</p>
     <p><b>Trade value</b> is FantasyCalc's redraft value (12-team, half PPR), built from real trades. <b>Model value</b> puts our rest-of-season value over replacement on the same scale, so "edge" shows who's mispriced.</p>
+    <p><b>Injury risk</b> estimates each player's chance of getting hurt each game from his position's base rate, games missed last season and this season, weeks on the injury report, a recent soft-tissue or repeat injury (hamstrings, groins and calves recur often), age and workload. Expected missed games are subtracted from every future week, so riskier players project, and trade, a bit lower.</p>
+    <p><b>Season outlook</b> simulates the rest of your league's schedule 5,000 times using every team's projected lineup. It gives playoff odds, the wins usually needed, and each game's <i>leverage</i>: how much winning it moves your odds. When you're not a likely playoff team, trades and pickups weight those high-leverage regular-season weeks more and discount playoff-week points by your odds of getting there.</p>
     <p><b>Recommended trades</b> search 1-for-1, 2-for-1, 1-for-2 and 2-for-2 deals with every manager. Each must be fair by market value, raise your optimal lineup's rest-of-season points, and not gut theirs.</p></div>`;
 }
 
@@ -527,6 +556,9 @@ function openPlayer(pid) {
       ${srcs ? `<div class="small muted">Projection sources: ${srcs}</div>` : ""}
       ${(r.notes || []).length ? `<h3 style="margin-top:12px">Why</h3><ul class="notes" style="color:var(--text)">${r.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
       ${r.injury_notes ? `<p class="small"><b>Injury:</b> ${esc(r.injury_notes)}</p>` : ""}
+      ${r.inj_risk ? `<h3 style="margin-top:12px">Injury risk: <span class="chip ${r.inj_risk.level === "High" ? "bad" : r.inj_risk.level === "Medium" ? "warn" : "good"}">${esc(r.inj_risk.level)}</span></h3>
+        <p class="small" style="margin:2px 0">About <b>${f1(r.inj_risk.exp_missed_6wk)}</b> games missed expected over the next 6 weeks (already built into his rest-of-season projection and value).</p>
+        ${(r.inj_risk.why || []).length ? `<ul class="notes">${r.inj_risk.why.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}` : ""}
       ${u.weekly ? `<h3 style="margin-top:12px">Points by week</h3>${spark(u.weekly)}` : ""}
       ${u.games ? `<h3 style="margin-top:12px">Usage</h3><div class="kv">
         <div>Pts/game<b>${f1(u.ppg)}</b>last 3: ${f1(u.last3_ppg)}</div><div>Expected/game<b>${f1(u.exp_ppg)}</b>from usage</div>

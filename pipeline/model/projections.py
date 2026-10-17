@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ..sources import weather as wx
+from . import injury
 from .context import qb_change
 
 CV = {"QB": 0.38, "RB": 0.55, "WR": 0.62, "TE": 0.68, "K": 0.45, "DST": 0.6}
@@ -265,9 +266,14 @@ def _fp_points(out, S):
 
 def _rest_of_season(out, S, by_team_week, weeks, playoff_weeks):
     usage, dvp, week = S["usage"], S["dvp"], S["week"]
+    hist_all = S.get("inj_hist", {})
     for pid, r in out.items():
         pos, team = r["pos"], r["team"]
         u = usage.get(pid, {})
+        rk = injury.risk(r, u, hist_all.get(pid, {}), r.get("injury"), r.get("injury_detail"), week)
+        if rk:
+            h, dur, level, why = rk
+            r["inj_risk"] = dict(injury.summarize(level, h, dur), why=why)
         sid = S["reg"].players[pid].get("sleeper_id") or ""
         base = u.get("base")
         if base is None and not r.get("bye") and r.get("mult") and r.get("proj"):
@@ -307,6 +313,9 @@ def _rest_of_season(out, S, by_team_week, weeks, playoff_weeks):
                 val = 0.0
             elif status in ("O", "D") and ahead == 1:
                 val *= 0.85
+            if rk:
+                # Chance he's hurt by then (beyond what the current designation already covers).
+                val *= injury.availability(rk[0], rk[1], ahead)
             ros.append([w, round(float(val), 2)])
         pts = [v for _, v in ros]
         play = [v for w, v in ros if w in playoff_weeks]

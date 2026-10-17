@@ -186,3 +186,8 @@ footer { max-width: 1100px; margin: 0 auto; padding: 8px 16px 40px; color: var(-
   th, td { padding: 6px 5px; }
   .matchup .score { font-size: 22px; }
 }
+
+.risk { color: var(--bad); font-size: 12px; margin-left: 3px; cursor: help; }
+.wkstrip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+.wkbox { flex: 0 0 auto; min-width: 74px; background: var(--surface-2); border-radius: 8px; padding: 6px 8px; text-align: center; border: 1px solid transparent; }
+.wkbox.big { border-color: var(--accent); }

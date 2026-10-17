@@ -40,6 +40,11 @@ def sell_high(players, mine):
         if any("instead of" in n for n in r.get("notes", [])):
             score += 0.4
             why.append("His QB situation got worse")
+        ir = r.get("inj_risk") or {}
+        if ir.get("level") == "High":
+            score += 0.8
+            why.append(f"High injury risk (about {ir['exp_missed_6wk']:.1f} games missed expected over the next 6): "
+                       + "; ".join(ir.get("why", [])[:2]))
         if score >= 1:
             out.append({"pid": pid, "score": round(score, 2), "why": why})
     return sorted(out, key=lambda x: -x["score"])
@@ -76,6 +81,10 @@ def buy_low(players, owner_of, me):
         if u.get("snap_last2") and u.get("snap") and u["snap_last2"] > u["snap"] + 0.1:
             score += 0.5
             why.append("Snap share rising")
+        ir = r.get("inj_risk") or {}
+        if ir.get("level") == "High":
+            score -= 0.8
+            why.append("Caution: high injury risk (" + "; ".join(ir.get("why", [])[:1]) + ")")
         if score >= 1:
             out.append({"pid": pid, "team": tid, "score": round(score, 2), "why": why})
     return sorted(out, key=lambda x: -x["score"])[:40]
@@ -156,8 +165,8 @@ class TradeFinder:
         me_t, them = self.teams[self.me], self.teams[tid]
         my_new, my_drops = self._after(me_t["pids"], give, get, len(me_t["pids"]))
         th_new, th_drops = self._after(them["pids"], get, give, len(them["pids"]))
-        my_gain = (self.st.total(my_new) - self.base[self.me]) / self.nweeks
-        th_gain = (self.st.total(th_new) - self.base[tid]) / self.nweeks
+        my_gain = (self.st.total(my_new, self.me) - self.base[self.me]) / self.nweeks
+        th_gain = (self.st.total(th_new, tid) - self.base[tid]) / self.nweeks
         give_v = sum(self._value(p) for p in give)
         get_v = sum(self._value(p) for p in get)
         # The side taking more bodies pays for it with whoever they cut.
@@ -181,7 +190,7 @@ class TradeFinder:
                 "my_drops": my_drops, "their_drops": th_drops, "score": round(my_gain * p_accept, 3)}
 
     def run(self, sell_ids, limit=12):
-        self.base = {tid: self.st.total(t["pids"]) for tid, t in self.teams.items()}
+        self.base = {tid: self.st.total(t["pids"], tid) for tid, t in self.teams.items()}
         mine = [p for p in self.teams[self.me]["pids"] if p in self.P and self.P[p]["pos"] in POS_GROUPS]
         mine.sort(key=self._value, reverse=True)
         my_c = list(dict.fromkeys(mine[:10] + [p for p in sell_ids if p in mine]))
