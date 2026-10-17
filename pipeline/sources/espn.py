@@ -3,8 +3,8 @@ import json
 
 from ..util import get_json, log, norm_team, safe
 
-FANTASY = "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/{season}/segments/0/leagues/{league}"
-DEFAULTS = "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/{season}/segments/0/leaguedefaults/{kind}"
+FANTASY = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league}"
+DEFAULTS = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leaguedefaults/{kind}"
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 
 POS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DST"}
@@ -182,6 +182,40 @@ def parse_league(base, rost, players_raw, tx, cfg):
         "faab_budget": acq.get("acquisitionBudget") if acq.get("isUsingAcquisitionBudget") else None,
         "teams": teams, "me": me, "schedule": schedule, "trades": trades, "players": players,
     }
+
+
+SNAPSHOT_FILES = ("league/espn.enc.json", "league/espn.json")
+
+
+def load_snapshot(cfg):
+    """League data saved by the site's ESPN sync (ESPN blocks cloud servers, so the browser fetches it).
+    Returns (league, synced_iso) or (None, reason)."""
+    import copy
+    import os
+
+    from .. import crypto
+
+    for path in SNAPSHOT_FILES:
+        if not os.path.exists(path):
+            continue
+        raw = open(path).read()
+        if path.endswith(".enc.json"):
+            if not cfg.site_password:
+                return None, "A synced league file exists but the SITE_PASSWORD secret isn't set, so it can't be decrypted."
+            try:
+                raw = crypto.decrypt(raw, cfg.site_password)
+            except Exception:  # noqa: BLE001
+                return None, "Couldn't decrypt the synced league: the password used when syncing doesn't match SITE_PASSWORD."
+        snap = json.loads(raw)
+        c = copy.copy(cfg)
+        c.league_id = cfg.league_id or str(snap.get("league"))
+        if not c.swid and snap.get("swid"):
+            c.swid = snap["swid"]
+        players = [p for p in snap.get("players", [])]
+        league = parse_league(snap["main"], snap["roster"], players, [], c)
+        league["synced"] = snap.get("synced")
+        return league, snap.get("synced")
+    return None, None
 
 
 def load_default_players(season, week):
