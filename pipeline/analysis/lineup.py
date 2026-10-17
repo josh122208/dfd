@@ -142,24 +142,30 @@ class Strength:
         self.idx = {w: i for i, w in enumerate(weeks)}
         wts = np.array([playoff_weight if w in playoff_weeks else 1.0 for w in weeks])
         self.players = players
-        self.vec = {}
+        self.team_wts = {}  # per-team week weights (playoff push), set by build
+        self.vec, self.vec_played = {}, {}
         for pid, r in players.items():
             v = np.zeros(len(weeks))
             for w, pts in r.get("ros", []):
                 if w in self.idx:
                     v[self.idx[w]] = pts
+            full = v.copy()
             if r.get("locked") and week in self.idx:
+                full[self.idx[week]] = r.get("actual") if r.get("actual") is not None else v[self.idx[week]]
                 v[self.idx[week]] = 0.0  # already played: a trade can't change this week's points
             self.vec[pid] = v
+            self.vec_played[pid] = full
         self.wts = wts
 
-    def weekly(self, pids):
+    def weekly(self, pids, played=False):
+        """Optimal lineup points per remaining week. played=True counts points already scored this week."""
         n = len(self.weeks)
+        vecs = self.vec_played if played else self.vec
         by_pos = {}
         for p in pids:
             r = self.players.get(p)
             if r:
-                by_pos.setdefault(r["pos"], []).append(self.vec[p])
+                by_pos.setdefault(r["pos"], []).append(vecs[p])
         total = np.zeros(n)
         left = {}
         for pos in DEDICATED:
@@ -185,5 +191,17 @@ class Strength:
             left[next(iter(sorted(elig)))] = rest
         return total
 
-    def total(self, pids):
-        return float((self.weekly(pids) * self.wts).sum())
+    def total(self, pids, team=None):
+        return float((self.weekly(pids) * self.team_wts.get(team, self.wts)).sum())
+
+    def push_weights(self, odds, leverage=None, reg_weeks=14):
+        """Weight weeks by what matters for each team: a long shot needs regular-season wins now, and only
+        values playoff-week points in proportion to its chance of getting there."""
+        for tid, p in odds.items():
+            w = []
+            for wk in self.weeks:
+                if wk > reg_weeks:
+                    w.append(1.3 * min(1.0, p / 0.5))
+                else:
+                    w.append(1.0 + 2.0 * (leverage or {}).get(tid, {}).get(wk, 0.0))
+            self.team_wts[tid] = np.array(w)

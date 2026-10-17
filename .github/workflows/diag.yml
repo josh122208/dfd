@@ -43,5 +43,18 @@ jobs:
           print("example (ids only)", json.dumps({k: v for k, v in ex.items() if k not in ("memberId",)}, default=str)[:900])
           PY
           } > probe.txt 2>&1
+          python3 - >> tb.txt <<'PY' || true
+          import json, os, collections
+          from pipeline import crypto
+          d = json.loads(crypto.decrypt(open("out/data.enc.json").read(), os.environ["SITE_PASSWORD"]))
+          P = d["players"]
+          notes = [n for r in P.values() for n in r.get("notes", [])]
+          keys = ["is O", "is IR", "Pass protection", "Run-blocking", "blitzes", "Play-action", "stacks the box", "Handcuff", "Coach talk"]
+          print({k: sum(1 for n in notes if k in n) for k in keys})
+          print("tendency traits per team:", [len((p.get("tendency") or {}).get("traits", [])) for p in d.get("profiles", {}).values()])
+          print("season:", {k: d.get("season", {}).get(k) for k in ("odds", "proj_wins", "proj_losses", "wins_needed", "mode")})
+          print("waivers:", len(d["waivers"]["adds"]), "stashes:", len(d["waivers"].get("stashes", [])), "rank:", d["waivers"].get("waiver_rank"))
+          print("trades:", len(d.get("trades", [])), "sources:", d["meta"]["sources"])
+          PY
           git config user.name diag-bot && git config user.email diag@users.noreply.github.com
           git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f probe.txt && git commit -qm probe && git push -qf origin diag-out

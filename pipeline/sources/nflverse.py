@@ -25,6 +25,7 @@ def load(season):
     t["fpecr"] = safe(lambda: get_csv(f"{RAW}/dynastyprocess/data/master/files/db_fpecr_latest.csv", max_age=1800),
                       empty, "fantasypros")
     t["depth"] = safe(lambda: _latest_depth(season), empty, "depth")
+    t["ftn"] = safe(lambda: get_csv(f"{REL}/ftn_charting/ftn_charting_{season}.csv"), empty, "ftn charting")
     for k, v in t.items():
         log.info("nflverse %-11s %s rows", k, len(v))
     t["games_all"] = t["games"]

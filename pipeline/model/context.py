@@ -153,3 +153,75 @@ def defense_vs_position(stats, ppr):
         for i, d in enumerate(order, 1):
             ranks.setdefault(d, {})[pos] = i
     return out, {"ranks": ranks, "allowed": raw, "pos_avg": pos_avg.to_dict()}
+
+
+def _shrink(value, n, prior, k):
+    return (value * n + prior * k) / (n + k) if n else prior
+
+
+def trenches_and_style(pbp, ftn):
+    """Offensive line / pass rush and play-style profiles per team, plus QB-vs-blitz and RB-vs-stacked-box splits.
+
+    Returns (team metrics, league averages, qb splits, rb splits). Rates are shrunk toward league average so a
+    couple of games can't swing a matchup."""
+    if pbp.empty:
+        return {}, {}, {}, {}
+    plays = pbp[pbp.play_type.isin(["pass", "run"]) | (pbp.get("sack", 0) == 1)].copy()
+    if not ftn.empty and "play_id" in plays:
+        f = ftn.rename(columns={"nflverse_game_id": "game_id", "nflverse_play_id": "play_id"})
+        cols = ["game_id", "play_id", "n_defense_box", "n_blitzers", "n_pass_rushers", "is_play_action", "is_screen_pass"]
+        plays = plays.merge(f[[c for c in cols if c in f]], on=["game_id", "play_id"], how="left")
+    drop = plays[plays.qb_dropback == 1]
+    runs = plays[(plays.play_type == "run") & (plays.qb_dropback != 1)]
+    lg = {"sack": drop.sack.mean(), "hit": drop.qb_hit.mean(), "stuff": (runs.yards_gained <= 0).mean(),
+          "rush_epa": runs.epa.mean(), "pass_epa": drop.epa.mean()}
+    has_ftn = "n_blitzers" in plays
+    if has_ftn:
+        db = drop[drop.n_blitzers.notna()]
+        rb = runs[runs.n_defense_box.notna()]
+        lg.update(blitz=(db.n_blitzers > 0).mean(), stacked=(rb.n_defense_box >= 8).mean(),
+                  pa=(db.is_play_action == True).mean(), pa_epa=db[db.is_play_action == True].epa.mean())  # noqa: E712
+    teams = {}
+    for side, col in (("off", "posteam"), ("def", "defteam")):
+        for team, g in drop.groupby(col):
+            m = teams.setdefault(team, {})
+            n = len(g)
+            m[f"{side}_sack"] = _shrink(g.sack.mean(), n, lg["sack"], 150)
+            m[f"{side}_hit"] = _shrink(g.qb_hit.mean(), n, lg["hit"], 150)
+            m[f"{side}_pass_epa"] = _shrink(g.epa.mean(), n, lg["pass_epa"], 150)
+            if has_ftn:
+                gb = g[g.n_blitzers.notna()]
+                if side == "def":
+                    m["def_blitz"] = _shrink((gb.n_blitzers > 0).mean(), len(gb), lg["blitz"], 120)
+                    pa = gb[gb.is_play_action == True]  # noqa: E712
+                    m["def_pa_epa"] = _shrink(pa.epa.mean(), len(pa), lg["pa_epa"], 60)
+                else:
+                    m["off_pa_rate"] = _shrink((gb.is_play_action == True).mean(), len(gb), lg["pa"], 120)  # noqa: E712
+        for team, g in runs.groupby(col):
+            m = teams.setdefault(team, {})
+            n = len(g)
+            m[f"{side}_stuff"] = _shrink((g.yards_gained <= 0).mean(), n, lg["stuff"], 120)
+            m[f"{side}_rush_epa"] = _shrink(g.epa.mean(), n, lg["rush_epa"], 120)
+            if has_ftn and side == "def":
+                gb = g[g.n_defense_box.notna()]
+                m["def_stacked"] = _shrink((gb.n_defense_box >= 8).mean(), len(gb), lg["stacked"], 100)
+    for key in ("off_sack", "def_sack", "off_stuff", "def_stuff", "def_blitz", "def_stacked"):
+        vals = [(t, m[key]) for t, m in teams.items() if key in m]
+        # off_* lower is better for the offense; def_* higher is better for the defense
+        rev = key.startswith("def")
+        for i, (t, _) in enumerate(sorted(vals, key=lambda x: x[1], reverse=rev), 1):
+            teams[t][key + "_rank"] = i
+    qb, rbs = {}, {}
+    if has_ftn:
+        db = drop[drop.n_blitzers.notna() & drop.passer_player_id.notna()]
+        for pid, g in db.groupby("passer_player_id"):
+            b, nb = g[g.n_blitzers > 0], g[g.n_blitzers == 0]
+            if len(b) >= 10 and len(nb) >= 10:
+                qb[pid] = {"edge": _shrink(b.epa.mean() - nb.epa.mean(), len(b), 0.0, 60), "n": len(b)}
+        rr = runs[runs.n_defense_box.notna() & runs.rusher_player_id.notna()]
+        for pid, g in rr.groupby("rusher_player_id"):
+            s = g[g.n_defense_box >= 8]
+            if len(g) >= 25 and len(s) >= 5:
+                ratio = (s.yards_gained.mean() + 1) / (g.yards_gained.mean() + 1)
+                rbs[pid] = {"stacked_ratio": _shrink(ratio, len(s), 1.0, 25), "n": len(s)}
+    return teams, lg, qb, rbs

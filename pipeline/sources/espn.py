@@ -142,6 +142,7 @@ def parse_league(base, rost, players_raw, tx, cfg):
             "points_for": rec.get("pointsFor", 0), "points_against": rec.get("pointsAgainst", 0),
             "streak": f"{rec.get('streakType', '')[:1]}{rec.get('streakLength', '')}",
             "seed": t.get("playoffSeed"),
+            "waiver_rank": t.get("waiverRank"),
             "faab_left": (acq.get("acquisitionBudget") or 0) - (t.get("transactionCounter") or {}).get("acquisitionBudgetSpent", 0),
             "trades": (t.get("transactionCounter") or {}).get("trades", 0),
             "acquisitions": (t.get("transactionCounter") or {}).get("acquisitions", 0),
@@ -171,6 +172,13 @@ def parse_league(base, rost, players_raw, tx, cfg):
                            "items": [{"player": i.get("playerId"), "from": i.get("fromTeamId"), "to": i.get("toTeamId")}
                                      for i in t.get("items", [])]})
 
+    # Slim copy of every transaction (proposals, declines, waivers, adds/drops) for manager-tendency profiles.
+    tx_slim = [{"type": t.get("type"), "status": t.get("status"), "team": t.get("teamId"),
+                "bid": t.get("bidAmount") or 0, "period": t.get("scoringPeriodId"), "related": t.get("relatedTransactionId"),
+                "id": t.get("id"),
+                "items": [{"type": i.get("type"), "player": i.get("playerId"), "from": i.get("fromTeamId"),
+                           "to": i.get("toTeamId")} for i in t.get("items", []) or [] if i.get("type") != "LINEUP"]}
+               for t in tx if t.get("type") != "ROSTER"]
     players = [parse_player(p, season, week) for p in players_raw]
     log.info("espn league: %d teams, %d players, week %s, me=%s", len(teams), len(players), week, me)
     return {
@@ -180,7 +188,7 @@ def parse_league(base, rost, players_raw, tx, cfg):
         "final_week": final_week,
         "trade_deadline": trade.get("deadlineDate"),
         "faab_budget": acq.get("acquisitionBudget") if acq.get("isUsingAcquisitionBudget") else None,
-        "teams": teams, "me": me, "schedule": schedule, "trades": trades, "players": players,
+        "teams": teams, "me": me, "schedule": schedule, "trades": trades, "players": players, "tx": tx_slim,
     }
 
 
