@@ -173,6 +173,9 @@ def main():
          "sleeper_players": sp, "slots": slots, "teams": n_teams,
          "trade_deadline": (league or {}).get("trade_deadline")}
     P = projections.project(S)
+    # Every analysis below indexes P by roster pid; drop anything that couldn't be projected (non-fantasy positions).
+    for tm in teams:
+        tm["pids"] = [p for p in tm["pids"] if p in P]
 
     byes = {}
     for team in set(sched.team):
