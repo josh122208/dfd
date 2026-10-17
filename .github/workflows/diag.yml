@@ -8,7 +8,8 @@ jobs:
   diag:
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - shell: bash {0}
+        run: |
           UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
           probe() { echo "== $1"; curl -sS -A "$UA" -o body -w "%{http_code}\n" "$1" ${2:+-H "$2"}; head -c 300 body; echo; }
           {
