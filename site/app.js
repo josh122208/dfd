@@ -589,7 +589,8 @@ function syncPage() {
     if (e.data.type === "espn-league-error" && !got) {
       failed = true;
       e.source.postMessage({ type: "espn-league-received" }, e.origin);
-      msg("Sync failed: " + esc(e.data.message), true);
+      const det = (e.data.details || []).map((d) => `<li>${esc(d)}</li>`).join("");
+      msg("Sync failed: " + esc(e.data.message) + (det ? `<ul class="small" style="text-align:left;color:var(--muted);margin-top:10px">${det}</ul><span class="small muted">Screenshot this and send it to Claude.</span>` : ""), true);
       return;
     }
     if (e.data.type !== "espn-league" || got) return;
@@ -646,8 +647,8 @@ async function renderConnect(el) {
     </ol>
     <h3>Each sync</h3><ol>
       <li>Open your league on <a href="https://fantasy.espn.com/football/" target="_blank" rel="noopener">fantasy.espn.com</a> in your browser (not the app) and log in.</li>
-      <li>Click the <b>Sync to Fantasy Edge</b> bookmark. It tells you it's opening ESPN's data page, a page of raw text.</li>
-      <li>On that page, click the bookmark again. A Fantasy Edge tab opens, encrypts your league with your site password, and saves it. The site updates about 2 minutes later.</li>
+      <li>Click the <b>Sync to Fantasy Edge</b> bookmark in your bookmarks bar.</li>
+      <li>A Fantasy Edge tab opens, encrypts your league with your site password, and saves it. The site updates about 2 minutes later.</li>
     </ol></div>
     <div class="card small"><b>Saved in this browser</b>: repo <span class="mono">${esc(repoSlug() || "(auto)")}</span>, token ${store.get("ghtoken") ? "✓" : "—"}, password ${store.get("pw") ? "✓" : "—"}.
       <button class="btn ghost" id="forget" style="margin-left:6px">Forget token</button></div>`;

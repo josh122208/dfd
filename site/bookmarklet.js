@@ -1,31 +1,21 @@
 /* Runs on fantasy.espn.com (as a bookmarklet). Reads your league with your own ESPN login and hands it to the site.
    ESPN blocks cloud servers like GitHub's, so this is how league data gets out. Nothing is sent anywhere except
    the site window it opens. SITE is replaced with the page's own URL when the bookmarklet link is built.
-   Browsers won't let fantasy.espn.com read ESPN's data server (CORS), so the first tap moves to a page on that
-   server, where the same requests are same-origin, and the second tap does the sync. Errors are shown in the site
-   tab rather than with alert(), which Chrome suppresses for tabs that just lost focus. */
+   ESPN's data server rejects requests that don't look like they come from ESPN's own app, so this copies what the
+   page itself does: it finds the data hosts the page already used (performance entries) and sends ESPN's app
+   headers. Every attempt is recorded and shown in the site tab if all of them fail. */
 (async () => {
   const SITE = "__SITE__";
-  const API = "lm-api-reads.fantasy.espn.com";
-  const onApi = location.hostname === API;
   const q = new URLSearchParams(location.search);
-  const pm = location.pathname.match(/seasons\/(\d+)\/segments\/0\/leagues\/(\d+)/);
-  const league = q.get("leagueId") || (pm && pm[2]);
-  if (!/espn\.com$/.test(location.hostname) || !league) {
-    alert("Open your league on fantasy.espn.com first (any page whose address has leagueId=), then tap this bookmark again.");
+  const league = q.get("leagueId");
+  if (!/(^|\.)espn\.com$/.test(location.hostname) || !league) {
+    alert("Open your league on fantasy.espn.com first (any page whose address has leagueId=), then use this bookmark again.");
     return;
   }
   const now = new Date();
-  const season = (pm && pm[1]) || q.get("seasonId") || (now.getMonth() < 2 ? now.getFullYear() - 1 : now.getFullYear());
-  const base = `https://${API}/apps/fantasy/ffl/seasons/${season}/segments/0/leagues/${league}`;
-  /* Browsers block fantasy.espn.com from reading ESPN's data server, so step 1 just goes there. */
-  if (!onApi) {
-    alert("Step 1 of 2: ESPN's data page will open next (it looks like a page of raw text).\n\nWhen it loads, use the Sync to Fantasy Edge bookmark again.");
-    location.href = base + "?view=mStatus";
-    return;
-  }
+  const season = q.get("seasonId") || (now.getMonth() < 2 ? now.getFullYear() - 1 : now.getFullYear());
   const win = window.open(SITE + "#sync", "fantasy-edge-sync");
-  if (!win) { alert("Your browser blocked the pop-up. Allow pop-ups for lm-api-reads.fantasy.espn.com and tap the bookmark again."); return; }
+  if (!win) { alert("Your browser blocked the pop-up. Allow pop-ups for fantasy.espn.com and use the bookmark again."); return; }
   const target = new URL(SITE).origin;
   let tries = 0, timer;
   /* Keep sending until the site tab says it got it (it may still be loading). */
@@ -38,17 +28,44 @@
   window.addEventListener("message", (e) => {
     if (e.data && e.data.type === "espn-league-received") clearTimeout(timer);
   });
-  const fail = (text) => deliver({ type: "espn-league-error", message: text });
+
+  /* Data URLs the ESPN page itself loaded: tells us the current host and app version. */
+  const used = performance.getEntriesByType("resource").map((e) => e.name)
+    .filter((u) => /espn/.test(u) && /(apps\/fantasy|\/ffl\/|leagues\/)/.test(u));
+  const hosts = [...new Set(used.filter((u) => /\/apps\/fantasy\/ffl\//.test(u)).map((u) => new URL(u).origin))];
+  ["https://lm-api-reads.fantasy.espn.com", "https://fantasy.espn.com"].forEach((h) => { if (!hosts.includes(h)) hosts.push(h); });
+  const ver = (document.documentElement.innerHTML.match(/kona-PROD-[\w.-]+/) || ["kona-PROD-m.fc.latest.kona-hyper"])[0];
+  const headerSets = [
+    { "x-fantasy-source": "kona", "x-fantasy-platform": ver, accept: "application/json" },
+    {},
+  ];
+  const log = [];
+  let base = null, hdrs = null;
+  for (const h of hosts) {
+    for (const hs of headerSets) {
+      const b = `${h}/apps/fantasy/ffl/seasons/${season}/segments/0/leagues/${league}`;
+      const label = `${new URL(h).hostname} ${Object.keys(hs).length ? "+app headers" : "plain"}`;
+      try {
+        const r = await fetch(b + "?view=mStatus", { credentials: "include", headers: hs });
+        const ct = r.headers.get("content-type") || "";
+        log.push(`${label}: ${r.status} ${ct.split(";")[0]}`);
+        if (r.ok && ct.includes("json")) { base = b; hdrs = hs; break; }
+      } catch (e) {
+        log.push(`${label}: ${e.message}`);
+      }
+    }
+    if (base) break;
+  }
+  if (!base) {
+    deliver({ type: "espn-league-error", message: "ESPN didn't let the bookmark read your league.",
+      details: log.concat(["ESPN page used: " + (used.slice(0, 6).map((u) => u.split("?")[0]).join(" , ") || "(none found)"),
+        "app version: " + ver]) });
+    return;
+  }
   const get = async (step, views, extra = "", filter) => {
     const url = base + "?" + views.map((v) => "view=" + v).join("&") + extra;
-    let r;
-    try {
-      r = await fetch(url, { credentials: "include", headers: filter ? { "x-fantasy-filter": JSON.stringify(filter) } : {} });
-    } catch (e) {
-      const err = new Error(`${step}: ${e.message}`);
-      err.network = true;
-      throw err;
-    }
+    const headers = Object.assign({}, hdrs, filter ? { "x-fantasy-filter": JSON.stringify(filter) } : {});
+    const r = await fetch(url, { credentials: "include", headers });
     if (!r.ok) throw new Error(`${step}: ESPN said ${r.status}${r.status === 401 ? " (not logged in on this browser?)" : ""}`);
     return r.json();
   };
@@ -67,6 +84,6 @@
     const payload = { v: 1, synced: new Date().toISOString(), league, season, swid, main, roster, players };
     deliver({ type: "espn-league", payload });
   } catch (err) {
-    fail("Couldn't read your league from ESPN (" + err.message + "). Make sure you're logged in to ESPN in this browser, then try again.");
+    deliver({ type: "espn-league-error", message: "Couldn't read your league from ESPN (" + err.message + ").", details: log });
   }
 })();
