@@ -8,24 +8,17 @@ jobs:
   diag:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
-      - run: pip install -r requirements.txt
-      - run: python -m pipeline.build --out out 2>&1 | grep -vE "^\S+ \S+ INFO nflverse" | tail -60 > build.log || true
       - run: |
-          python - <<'PY'
-          import json, collections
-          d = json.load(open("out/data.json"))
-          P = d["players"]
-          src = collections.Counter(k for r in P.values() for k in (r.get("sources") or {}))
-          top = sorted(P.values(), key=lambda r: -(r.get("proj") or 0))[:25]
-          out = {"meta": d["meta"], "source_counts": src, "n": len(P),
-                 "weather": [ (r["name"], r.get("weather")) for r in P.values() if r.get("weather")][:10],
-                 "top": [(r["name"], r["pos"], r.get("proj"), r.get("sources"), r.get("fc_value"), r.get("fc_estimated"), r.get("pct_owned"), r.get("injury")) for r in top],
-                 "rising": [(P[x["pid"]]["name"], x["score"], x["adds_48h"]) for x in d.get("rising", [])[:10]]}
-          json.dump(out, open("diag.json", "w"), indent=1, default=str)
-          PY
-      - run: |
-          git config user.name diag-bot && git config user.email diag@users.noreply.github.com
-          git checkout --orphan diag-out && git rm -rqf . && git add -f diag.json build.log && git commit -qm diag && git push -f origin diag-out
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
+          probe() { echo "== $1"; curl -sS -A "$UA" -o body -w "%{http_code}\n" "$1" ${2:+-H "$2"}; head -c 300 body; echo; }
+          {
+          probe "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/2026/segments/0/leagues/1?view=mSettings"
+          probe "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/2026/segments/0/leagues/12345678?view=mSettings"
+          probe "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/2026/segments/0/leaguedefaults/3?view=kona_player_info"
+          probe "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/2026/players?scoringPeriodId=0&view=players_wl" 'x-fantasy-filter: {"filterActive":{"value":true}}'
+          probe "https://fantasy.espn.com/apps/fantasy/ffl/seasons/2026/segments/0/leaguedefaults/3?view=kona_player_info"
+          probe "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/2026/segments/0/leaguedefaults/1?view=kona_player_info" 'x-fantasy-filter: {"players":{"limit":5,"sortPercOwned":{"sortPriority":1,"sortAsc":false}}}'
+          } > probe.txt 2>&1
+          git init -q . && git config user.name diag-bot && git config user.email diag@users.noreply.github.com
+          git checkout -q --orphan diag-out && git add probe.txt && git commit -qm probe
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" diag-out
