@@ -17,6 +17,7 @@ const store = {
 async function boot() {
   const theme = store.get("theme");
   if (theme) document.documentElement.dataset.theme = theme;
+  if (location.hash === "#sync") return syncPage();
   let res = await fetch("data/data.json", { cache: "no-store" });
   if (res.ok) return start(await res.json());
   res = await fetch("data/data.enc.json", { cache: "no-store" });
@@ -69,9 +70,10 @@ function start(data) {
   document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => show(b.dataset.v)));
   banners();
   const views = { week: renderWeek, trades: renderTrades, waivers: renderWaivers, analyzer: renderAnalyzer,
-    playoffs: renderPlayoffs, league: renderLeague, players: renderPlayers, playbook: renderPlaybook };
+    playoffs: renderPlayoffs, league: renderLeague, players: renderPlayers, playbook: renderPlaybook, connect: renderConnect };
   for (const [k, fn] of Object.entries(views)) {
-    try { fn($("#v-" + k)); } catch (e) { $("#v-" + k).innerHTML = `<div class="banner bad">This tab failed to render: ${esc(e.message)}</div>`; console.error(e); }
+    const fail = (e) => { $("#v-" + k).innerHTML = `<div class="banner bad">This tab failed to render: ${esc(e.message)}</div>`; console.error(e); };
+    try { Promise.resolve(fn($("#v-" + k))).catch(fail); } catch (e) { fail(e); }
   }
   const src = Object.entries(m.sources || {}).map(([k, v]) => `${k}: ${v}`).join(" · ");
   $("#foot").innerHTML = `Sources: ${esc(src)}<br>Projections blend ESPN, Sleeper, FantasyPros and a usage model (nflverse). Trade values: FantasyCalc. Not affiliated with any of them.`;
@@ -89,7 +91,11 @@ function show(v) {
 function banners() {
   const m = D.meta, out = [];
   if (m.league_error) out.push(`<div class="banner bad"><b>League didn't load.</b> ${esc(m.league_error)}</div>`);
-  if (m.mode === "public") out.push(`<div class="banner info"><b>No ESPN league connected yet.</b> Showing league-wide rankings, values and pickups. Add your ESPN league ID (see the README) to get your lineup, trade partners and pitches.</div>`);
+  if (m.mode === "public") out.push(`<div class="banner info"><b>No ESPN league connected yet.</b> Showing league-wide rankings, values and pickups. <a href="#connect" onclick="show('connect');return false">Connect your ESPN league</a> to get your lineup, trade partners and pitches.</div>`);
+  if (m.league_synced) {
+    const days = (Date.now() - new Date(m.league_synced)) / 864e5;
+    if (days > 3) out.push(`<div class="banner warn">Your ESPN rosters were last synced ${Math.floor(days)} days ago. <a href="#connect" onclick="show('connect');return false">Re-sync</a> after trades, pickups or lineup changes.</div>`);
+  }
   const down = Object.entries(m.sources || {}).filter(([, v]) => /unavailable|fail/i.test(v));
   if (down.length) out.push(`<div class="banner warn">Some sources didn't respond this run, so projections lean on the others: ${down.map(([k]) => esc(k)).join(", ")}.</div>`);
   $("#banners").innerHTML = out.join("");
@@ -535,6 +541,110 @@ function openPlayer(pid) {
 dlgClose: {
   const d = document.getElementById("dlg");
   d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+}
+
+/* ---------- ESPN sync (browser → encrypted file in the repo → GitHub Actions rebuild) ---------- */
+function repoSlug() {
+  const saved = store.get("repo");
+  if (saved) return saved;
+  const owner = location.hostname.endsWith(".github.io") ? location.hostname.split(".")[0] : "";
+  const repo = location.pathname.split("/").filter(Boolean)[0] || "";
+  return owner && repo ? `${owner}/${repo}` : "";
+}
+const b64 = (buf) => {
+  const a = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+async function encryptText(text, pw) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 200000, hash: "SHA-256" }, base,
+    { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const gz = await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, gz);
+  return JSON.stringify({ v: 1, iter: 200000, salt: b64(salt), iv: b64(iv), ct: b64(ct) });
+}
+async function pushLeague(payload, pw, token, slug) {
+  const path = "league/espn.enc.json";
+  const api = `https://api.github.com/repos/${slug}/contents/${path}`;
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
+  const cur = await fetch(api, { headers });
+  if (cur.status === 401) throw new Error("GitHub rejected the token. Make a new one (see Connect ESPN).");
+  const sha = cur.ok ? (await cur.json()).sha : undefined;
+  const body = { message: `Sync ESPN league (${new Date().toLocaleString()})`, content: btoa(await encryptText(JSON.stringify(payload), pw)), sha };
+  const r = await fetch(api, { method: "PUT", headers, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`GitHub said ${r.status}: ${(await r.text()).slice(0, 200)}`);
+}
+function syncPage() {
+  const box = $("#sync");
+  box.hidden = false;
+  box.innerHTML = `<h1>🏈 Syncing ESPN…</h1><p class="muted" id="sync-msg">Waiting for your league data from ESPN.</p><div id="sync-form"></div>`;
+  const msg = (t, bad) => { $("#sync-msg").innerHTML = t; $("#sync-msg").style.color = bad ? "var(--bad)" : ""; };
+  let got = null;
+  window.addEventListener("message", (e) => {
+    if (!/(^|\.)espn\.com$/.test(new URL(e.origin).hostname) || !e.data || e.data.type !== "espn-league" || got) return;
+    got = e.data.payload;
+    e.source.postMessage({ type: "espn-league-received" }, e.origin);
+    const teams = (got.main.teams || []).length;
+    msg(`Got <b>${esc(got.main.settings?.name || "your league")}</b>: ${teams} teams, week ${got.main.scoringPeriodId}.`);
+    ask();
+  });
+  const ask = async () => {
+    let pw = store.get("pw"), token = store.get("ghtoken"), slug = repoSlug();
+    if (!pw || !token || !slug) {
+      $("#sync-form").innerHTML = `<form id="sf" style="text-align:left">
+        ${slug ? "" : `<label class="small">GitHub repo (owner/name)<input id="sf-repo" placeholder="josh122208/dfd" style="width:100%;margin:4px 0 10px"></label>`}
+        ${pw ? "" : `<label class="small">Site password (same as your SITE_PASSWORD secret)<input id="sf-pw" type="password" style="width:100%;margin:4px 0 10px"></label>`}
+        ${token ? "" : `<label class="small">GitHub token (see Connect ESPN for how to make one)<input id="sf-tok" type="password" style="width:100%;margin:4px 0 10px"></label>`}
+        <button class="btn" style="width:100%">Save &amp; sync</button></form>`;
+      $("#sf").onsubmit = (ev) => {
+        ev.preventDefault();
+        if ($("#sf-repo")) store.set("repo", $("#sf-repo").value.trim());
+        if ($("#sf-pw")) store.set("pw", $("#sf-pw").value);
+        if ($("#sf-tok")) store.set("ghtoken", $("#sf-tok").value.trim());
+        $("#sync-form").innerHTML = "";
+        ask();
+      };
+      return;
+    }
+    msg("Encrypting and saving to GitHub…");
+    try {
+      await pushLeague(got, pw, token, slug);
+      msg(`✅ Synced. Your site rebuilds in about 2 minutes.<br><a href="./">Back to Fantasy Edge</a>`);
+    } catch (err) {
+      msg("Sync failed: " + esc(err.message), true);
+      if (/token/i.test(err.message)) store.set("ghtoken", "");
+    }
+  };
+  setTimeout(() => { if (!got) msg("No data arrived. Start from your league page on fantasy.espn.com and tap the Fantasy Edge sync bookmark there.", true); }, 15000);
+}
+async function renderConnect(el) {
+  const m = D.meta;
+  const src = await (await fetch("bookmarklet.js")).text();
+  const site = location.origin + location.pathname;
+  const code = "javascript:" + encodeURIComponent(src.replace(/\/\*[\s\S]*?\*\//g, "").replace("__SITE__", site).replace(/\n\s*/g, " "));
+  const slug = repoSlug() || "josh122208/dfd";
+  el.innerHTML = `<h2>Connect your ESPN league</h2>
+    <div class="card small">${m.league_synced ? `✅ Last synced <b>${new Date(m.league_synced).toLocaleString()}</b>. Re-sync after trades, pickups or lineup changes. Projections, injuries and Vegas lines refresh automatically every day either way.` : "Not synced yet."}</div>
+    <div class="card small"><p style="margin-top:0"><b>Why the extra step?</b> ESPN blocks cloud servers (including GitHub's) from its fantasy API, so your browser, where you're already logged in, reads the league and saves an encrypted copy to your repo. ESPN cookies never leave your browser.</p>
+    <h3>One-time setup</h3><ol>
+      <li><b>Make a GitHub token.</b> On GitHub: Settings → Developer settings → Personal access tokens → <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained tokens → Generate new token</a>. Repository access: <b>Only select repositories → ${esc(slug.split("/")[1] || "dfd")}</b>. Permissions → Repository permissions → <b>Contents: Read and write</b>. Copy the token. You'll paste it on the first sync and it stays in this browser only.</li>
+      <li><b>Add the bookmark.</b> On a computer, drag this button to your bookmarks bar: <a class="btn" href="${esc(code)}" onclick="alert('Drag this to your bookmarks bar instead of clicking it.');return false">⚡ Sync to Fantasy Edge</a><br>
+        On a phone: bookmark any page, edit that bookmark, and replace its address with the code below.<br>
+        <textarea readonly id="bm" style="width:100%;height:70px;margin-top:6px;font:12px var(--mono);background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:8px">${esc(code)}</textarea>
+        <button class="btn ghost" id="bm-copy">Copy bookmark code</button></li>
+    </ol>
+    <h3>Each sync</h3><ol>
+      <li>Open your league on <a href="https://fantasy.espn.com/football/" target="_blank" rel="noopener">fantasy.espn.com</a> in your browser (not the app) and log in.</li>
+      <li>Tap the <b>Sync to Fantasy Edge</b> bookmark. On a phone, type its name in the address bar and tap it.</li>
+      <li>A tab opens, encrypts your league with your site password, and saves it. The site updates about 2 minutes later.</li>
+    </ol></div>
+    <div class="card small"><b>Saved in this browser</b>: repo <span class="mono">${esc(repoSlug() || "(auto)")}</span>, token ${store.get("ghtoken") ? "✓" : "—"}, password ${store.get("pw") ? "✓" : "—"}.
+      <button class="btn ghost" id="forget" style="margin-left:6px">Forget token</button></div>`;
+  $("#bm-copy", el).onclick = async () => { try { await navigator.clipboard.writeText(code); $("#bm-copy", el).textContent = "Copied ✓"; } catch { $("#bm", el).select(); } };
+  $("#forget", el).onclick = () => { store.set("ghtoken", ""); renderConnect(el); };
 }
 
 boot().catch((e) => {

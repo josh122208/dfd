@@ -23,19 +23,14 @@ A fantasy football assistant for an ESPN league. It runs on GitHub Actions and p
 
 ## Setup (one time)
 
-Add these in **GitHub → repo Settings → Secrets and variables → Actions → New repository secret**:
+1. **Turn on Pages:** repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+2. **Set a password:** **Settings → Secrets and variables → Actions → New repository secret**. Name it `SITE_PASSWORD` and pick any password. It encrypts your published data and synced league so leaguemates can't read your trade plans. The site asks for it once per browser.
+3. **Run it:** **Actions → Update fantasy data and site → Run workflow**. The site is at `https://<your-username>.github.io/dfd/`.
+4. **Connect ESPN:** open the site's **Connect ESPN** tab and follow the steps. In short: make a GitHub fine-grained token (this repo only, Contents read/write), add the sync bookmark, then tap it on your league page at fantasy.espn.com.
 
-| Secret | Value |
-|---|---|
-| `ESPN_LEAGUE_ID` | The number after `leagueId=` in your ESPN league URL |
-| `ESPN_S2` | Only for private leagues. In Chrome on a computer, log in to fantasy.espn.com and open DevTools (F12) → Application → Cookies → `https://fantasy.espn.com`. Copy the value of `espn_s2`. |
-| `ESPN_SWID` | Only for private leagues. The `SWID` cookie from the same place, including the `{braces}`. It also tells the app which team is yours. |
-| `SITE_PASSWORD` | Optional but recommended. Encrypts the published data so leaguemates who find the link can't read your trade plans. |
-| `MY_TEAM_ID` | Optional. Only needed if you don't add `ESPN_SWID`. |
+**Why a bookmark?** ESPN blocks cloud servers (GitHub included) from its fantasy API. The bookmark reads your league in your own logged-in browser, and the site encrypts it and saves it to `league/espn.enc.json`, which triggers a rebuild. Your ESPN cookies never leave your browser. Re-sync after trades, pickups or lineup changes. Everything else (projections, injuries, Vegas lines, weather, trade values) refreshes on its own every morning and at key moments in game week: Thursday before TNF, Friday after injury reports, Sunday after inactives, and Monday before MNF.
 
-Then go to **Actions → Update fantasy data and site → Run workflow**. The site is at `https://<your-username>.github.io/dfd/`.
-
-It refreshes automatically every morning and at key moments in game week: Thursday before TNF, Friday after injury reports, Sunday after inactives, and Monday before MNF.
+Optional secrets: `MY_TEAM_ID` if the app picks the wrong team as yours. `ESPN_LEAGUE_ID`, `ESPN_S2` and `ESPN_SWID` are only used when running locally, where ESPN isn't blocked.
 
 ## Run locally
 

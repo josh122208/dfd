@@ -52,21 +52,29 @@ def main():
     status["nflverse"] = "ok" if not t["stats"].empty else "no stats"
     nfl_week = context.current_week(t["games"])
 
-    league, league_err = None, None
-    if cfg.league_id:
+    league, league_err, synced = None, None, None
+    # ESPN blocks GitHub's servers, so in Actions we go straight to the browser-synced snapshot.
+    if cfg.league_id and not os.environ.get("GITHUB_ACTIONS"):
         try:
             league = espn.EspnLeague(cfg).load()
-            status["espn_league"] = "ok"
+            status["espn_league"] = "ok (live)"
         except PermissionError:
-            league_err = ("ESPN refused access. The league is private: add the ESPN_S2 and ESPN_SWID secrets "
-                          "(see README).")
+            league_err = "ESPN refused access. Private league: set ESPN_S2 and ESPN_SWID."
         except Exception as e:  # noqa: BLE001
             league_err = f"ESPN league failed to load: {e}"
-        if league_err:
-            status["espn_league"] = league_err
-            log.error(league_err)
+    if league is None:
+        snap, info = espn.load_snapshot(cfg)
+        if snap:
+            league, synced, league_err = snap, info, None
+            status["espn_league"] = f"synced {info}"
+        elif info:
+            league_err = info
+    if league_err:
+        status["espn_league"] = league_err
+        log.error(league_err)
 
-    week = int(league["week"]) if league else nfl_week
+    # A snapshot from an earlier week still has the right rosters; the NFL calendar decides the week.
+    week = max(int(league["week"]), nfl_week) if league else nfl_week
     ppr = float(league["ppr"]) if league else cfg.default_ppr
     slots = (league or {}).get("slots") or DEFAULT_SLOTS
     n_teams = league["size"] if league else cfg.default_teams
@@ -258,7 +266,7 @@ def main():
     data["meta"] = {
         "generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "season": cfg.season, "week": week, "mode": "league" if league else ("manual" if manual else "public"),
-        "league_name": (league or {}).get("name"), "league_error": league_err, "me": me,
+        "league_name": (league or {}).get("name"), "league_error": league_err, "me": me, "league_synced": synced,
         "slots": slots, "ppr": ppr, "teams": n_teams, "playoff_weeks": playoff_weeks, "reg_weeks": reg_weeks,
         "ros_weeks": ros_weeks, "trade_deadline": (league or {}).get("trade_deadline"),
         "faab_budget": (league or {}).get("faab_budget"), "replacement": S.get("replacement"),
