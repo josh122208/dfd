@@ -9,19 +9,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
-      - run: pip install -q -r requirements.txt
       - shell: bash {0}
         env:
           ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
-          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
         run: |
-          python -m pipeline.build --out out > all.log 2>&1; echo "exit $?" > tb.txt
-          echo "league_id_set=$([ -n "$ESPN_LEAGUE_ID" ] && echo yes) s2_len=${#ESPN_S2} swid_len=${#ESPN_SWID} pw_set=$([ -n "$SITE_PASSWORD" ] && echo yes)" >> tb.txt
-          grep -E "ERROR|espn league|Traceback|File \"/home/runner|Error:|Exception|done in|wrote" all.log | grep -viE "s2=|swid=" | sed -E 's/\{[0-9A-Fa-f-]{30,}\}/{SWID}/g' | tail -40 >> tb.txt
-          sed -n '/Traceback/,$p' all.log | sed -E 's/\{[0-9A-Fa-f-]{30,}\}/{SWID}/g' | tail -30 >> tb.txt
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+          {
+          for U in \
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?limit=5" \
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news?team=phi&limit=5" \
+            "https://site.api.espn.com/apis/fantasy/v2/games/ffl/news/players?playerId=4241479&limit=5" \
+            "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/news/players?playerId=4241479" \
+            "https://news.google.com/rss/search?q=%22Sirianni%22+%22DeVonta+Smith%22&hl=en-US&gl=US&ceid=US:en" \
+            "https://www.rotowire.com/rss/news.php?sport=NFL" \
+            "https://www.cbssports.com/rss/headlines/nfl/" \
+            "https://www.espn.com/espn/rss/nfl/news" ; do
+            echo "== $U"; curl -sS -A "$UA" -L -o body -w "%{http_code} %{content_type} %{size_download}\n" "$U"; head -c 700 body | tr '\n' ' '; echo; echo
+          done
+          echo "== TRANSACTIONS schema"
+          curl -sS -A "$UA" -b "espn_s2=$ESPN_S2; SWID=$ESPN_SWID" -o tx.json "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026/segments/0/leagues/$ESPN_LEAGUE_ID?view=mTransactions2&scoringPeriodId=4"
+          python3 - <<'PY'
+          import json, collections
+          d = json.load(open("tx.json"))
+          tx = d.get("transactions", [])
+          print("n", len(tx), "top keys", sorted(d.keys()))
+          print("tx keys", sorted(set(k for t in tx for k in t)))
+          print("types", collections.Counter((t.get("type"), t.get("status")) for t in tx))
+          print("item keys", sorted(set(k for t in tx for i in t.get("items", []) for k in i)))
+          print("item types", collections.Counter(i.get("type") for t in tx for i in t.get("items", [])))
+          ex = next((t for t in tx if t.get("type", "").startswith("TRADE")), tx[0] if tx else {})
+          print("example (ids only)", json.dumps({k: v for k, v in ex.items() if k not in ("memberId",)}, default=str)[:900])
+          PY
+          } > probe.txt 2>&1
           git config user.name diag-bot && git config user.email diag@users.noreply.github.com
-          git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f tb.txt && git commit -qm tb && git push -qf origin diag-out
+          git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f probe.txt && git commit -qm probe && git push -qf origin diag-out
