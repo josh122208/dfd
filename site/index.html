@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Fantasy Edge</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="gate" class="gate" hidden>
+    <h1>🏈 Fantasy Edge</h1>
+    <p class="muted">This page is password protected.</p>
+    <form id="gate-form">
+      <input id="pw" type="password" placeholder="Password" autocomplete="current-password" autofocus>
+      <button class="btn" type="submit">Unlock</button>
+    </form>
+    <p id="gate-err" class="small" style="color:var(--bad)"></p>
+  </div>
+
+  <div id="app" hidden>
+    <header class="top">
+      <div class="top-inner">
+        <div class="brand">
+          <h1>🏈 Fantasy Edge</h1>
+          <span class="sub" id="sub"></span>
+          <button class="theme" id="theme" title="Toggle theme">◐</button>
+        </div>
+        <nav class="tabs" id="tabs">
+          <button data-v="week" class="on">This Week</button>
+          <button data-v="trades">Trades</button>
+          <button data-v="waivers">Waivers</button>
+          <button data-v="analyzer">Offer Analyzer</button>
+          <button data-v="playoffs">Playoffs</button>
+          <button data-v="league">League</button>
+          <button data-v="players">Players</button>
+          <button data-v="playbook">Playbook</button>
+        </nav>
+      </div>
+    </header>
+    <main>
+      <div id="banners"></div>
+      <section class="view on" id="v-week"></section>
+      <section class="view" id="v-trades"></section>
+      <section class="view" id="v-waivers"></section>
+      <section class="view" id="v-analyzer"></section>
+      <section class="view" id="v-playoffs"></section>
+      <section class="view" id="v-league"></section>
+      <section class="view" id="v-players"></section>
+      <section class="view" id="v-playbook"></section>
+    </main>
+    <footer id="foot"></footer>
+  </div>
+
+  <dialog id="dlg"></dialog>
+  <script src="app.js"></script>
+</body>
+</html>

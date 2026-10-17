@@ -1,0 +1,311 @@
+"""Entry point: python -m pipeline.build --out site/data
+
+Pulls every source, runs the model and analyses, and writes the JSON the website reads.
+"""
+import argparse
+import datetime as dt
+import json
+import logging
+import math
+import os
+import time
+
+import numpy as np
+
+from . import crypto
+from .analysis import extras, lineup, trades
+from .analysis.persuasion import PLAYBOOK
+from .config import Config
+from .model import context, players as pl, projections, values
+from .sources import espn, market, nflverse
+from .util import log, norm_team, r1, safe
+
+DEFAULT_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DST": 1}
+
+
+def clean(o):
+    """JSON-safe: numpy -> python, NaN/inf -> None, tuples -> lists."""
+    if isinstance(o, dict):
+        return {str(k): clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple, set)):
+        return [clean(v) for v in o]
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating, float)):
+        f = float(o)
+        return None if math.isnan(f) or math.isinf(f) else round(f, 3)
+    if isinstance(o, np.bool_):
+        return bool(o)
+    return o
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="site/data")
+    args = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    started = time.time()
+    cfg = Config()
+    status = {}
+
+    t = nflverse.load(cfg.season)
+    status["nflverse"] = "ok" if not t["stats"].empty else "no stats"
+    nfl_week = context.current_week(t["games"])
+
+    league, league_err = None, None
+    if cfg.league_id:
+        try:
+            league = espn.EspnLeague(cfg).load()
+            status["espn_league"] = "ok"
+        except PermissionError:
+            league_err = ("ESPN refused access. The league is private: add the ESPN_S2 and ESPN_SWID secrets "
+                          "(see README).")
+        except Exception as e:  # noqa: BLE001
+            league_err = f"ESPN league failed to load: {e}"
+        if league_err:
+            status["espn_league"] = league_err
+            log.error(league_err)
+
+    week = int(league["week"]) if league else nfl_week
+    ppr = float(league["ppr"]) if league else cfg.default_ppr
+    slots = (league or {}).get("slots") or DEFAULT_SLOTS
+    n_teams = league["size"] if league else cfg.default_teams
+    playoff_weeks = league["playoff_weeks"] if league else [15, 16, 17]
+    reg_weeks = league["reg_weeks"] if league else 14
+    final_week = max(playoff_weeks + [reg_weeks]) if playoff_weeks else 17
+    ros_weeks = list(range(week, final_week + 1))
+
+    board = safe(lambda: espn.scoreboard(cfg.season, week), {}, "espn scoreboard")
+    status["vegas_live"] = "ok" if board else "using nflverse lines"
+    sched = context.schedule_table(t["games"], board)
+    ctx = context.team_context(t, sched, week)
+    dvp, dvp_meta = context.defense_vs_position(t["stats"], ppr)
+    reg = pl.Registry(t)
+
+    sp = safe(market.sleeper_players, {}, "sleeper players")
+    status["sleeper"] = "ok" if sp else "unavailable"
+    for sid, s in sp.items():
+        if s["pos"] == "DST" and s.get("team"):
+            reg.add(f"DST_{s['team']}", sleeper_id=sid)
+        elif s.get("gsis_id") in reg.players:
+            reg.add(s["gsis_id"], sleeper_id=sid)
+    proj_key = {0.5: "pts_half_ppr", 1.0: "pts_ppr", 0.0: "pts_std"}.get(ppr, "pts_half_ppr")
+    sleeper_proj = market.sleeper_projections(cfg.season, ros_weeks) if sp else {}
+    trending = market.sleeper_trending() if sp else {}
+
+    owner_of, slot_of = {}, {}
+    teams = []
+    if league:
+        for tm in league["teams"]:
+            tm["pids"] = []
+            for e in tm["roster"]:
+                pid = reg.match(espn_id=e["espn_id"], name=e["name"], pos=e["pos"], team=e["team"])
+                if not pid:
+                    continue
+                _attach_espn(reg.players[pid], e)
+                reg.players[pid]["rostered"] = True
+                tm["pids"].append(pid)
+                owner_of[pid] = tm["id"]
+                slot_of[pid] = e["slot"]
+            teams.append(tm)
+        espn_players = league["players"]
+    else:
+        espn_players = safe(lambda: espn.load_default_players(cfg.season, week), [], "espn default players")
+    status["espn_players"] = f"{len(espn_players)} players" if espn_players else "unavailable"
+    espn_status = {}
+    for e in espn_players:
+        pid = reg.match(espn_id=e["espn_id"], name=e["name"], pos=e["pos"], team=e["team"])
+        if pid:
+            _attach_espn(reg.players[pid], e, keep=True)
+            espn_status[pid] = e.get("espn_status")
+
+    fp = market.fantasypros(t["fpecr"])
+    status["fantasypros"] = f"{len(fp)} ranked" if fp else "unavailable"
+    for fpid, d in fp.items():
+        pid = reg.match(fp_id=fpid, name=d["name"], pos=d["pos"], team=d.get("team"))
+        if pid:
+            p = reg.players[pid]
+            for k in ("fp_week_rank", "fp_ros_overall", "fp_ros_pos_rank"):
+                if d.get(k) is not None and d[k] == d[k]:
+                    p[k] = float(d[k])
+
+    fc = safe(lambda: market.fantasycalc(n_teams, ppr), None, "fantasycalc")
+    status["fantasycalc"] = f"{len(fc)} values" if fc is not None else "unavailable (using FantasyPros-based values)"
+    if fc is not None:
+        for row in fc.itertuples():
+            pid = reg.match(sleeper_id=row.sleeper_id, espn_id=row.espn_id, name=row.fc_name, pos=row.pos, team=row.team)
+            if pid:
+                reg.players[pid].update(fc_value=row.fc_value, fc_trend30=row.fc_trend30, fc_rank=row.fc_rank)
+
+    u = pl.weekly_usage(t, reg, ppr)
+    usage, _ = pl.summarize(u, t["stats_prev"], ppr)
+    if not league and ppr != 1.0:
+        # ESPN's league-less projections use full PPR.
+        for pid, p in reg.players.items():
+            if p.get("espn_proj") is not None:
+                p["espn_proj"] = max(0.0, p["espn_proj"] - (1 - ppr) * (usage.get(pid, {}).get("rec_pg") or 0))
+    if proj_key != "pts_half_ppr":
+        log.warning("Sleeper projections are half-PPR; league uses %s", ppr)
+
+    manual = None
+    if not league and cfg.manual_roster:
+        manual = {"id": 1, "name": "My team", "owner_first": "Me", "wins": 0, "losses": 0, "ties": 0,
+                  "points_for": 0, "trades": 0, "pids": []}
+        for nm in cfg.manual_roster:
+            hit = next((pid for (n, _pos), pid in reg.by_name.items() if n == pl.norm_name(nm)), None)
+            if hit:
+                manual["pids"].append(hit)
+                reg.players[hit]["rostered"] = True
+                owner_of[hit] = 1
+        teams = [manual]
+
+    S = {"t": t, "reg": reg, "usage": usage, "ctx": ctx, "dvp": dvp, "dvp_meta": dvp_meta, "sched": sched,
+         "week": week, "ppr": ppr, "ros_weeks": ros_weeks, "playoff_weeks": playoff_weeks, "sleeper_proj": sleeper_proj,
+         "sleeper_players": sp, "slots": slots, "teams": n_teams,
+         "trade_deadline": (league or {}).get("trade_deadline")}
+    P = projections.project(S)
+
+    byes = {}
+    for team in set(sched.team):
+        weeks_played = set(sched[sched.team == team].week)
+        b = [w for w in range(1, 19) if w not in weeks_played and w <= int(sched.week.max())]
+        byes[team] = b[0] if b else None
+    sched_byes = {(team, w) for team, w in ((tm, byes[tm]) for tm in byes) if w}
+    for pid, r in P.items():
+        p = reg.players[pid]
+        for k in ("fc_value", "fc_trend30", "fc_rank", "fc_estimated", "fp_ros_overall", "fp_ros_pos_rank", "pct_owned",
+                  "pct_change", "pct_started", "sleeper_id", "espn_id", "exp"):
+            if p.get(k) is not None:
+                r[k] = p[k]
+        us = usage.get(pid)
+        if us:
+            r["usage"] = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in us.items()}
+            r["season_pts"] = round(sum(x for _, x in us["weekly"]), 1)
+        elif p.get("espn_season_pts"):
+            r["season_pts"] = p["espn_season_pts"]
+        r["bye_week"] = byes.get(r["team"])
+        r["on_team"] = owner_of.get(pid)
+        r["slot"] = slot_of.get(pid)
+        sl = sp.get(p.get("sleeper_id") or "", {})
+        if sl.get("injury_notes"):
+            r["injury_notes"] = sl["injury_notes"]
+        if sl.get("depth_order"):
+            r["depth"] = sl["depth_order"]
+    values.compute(P, S)
+
+    strength = lineup.Strength(P, slots, ros_weeks, week, playoff_weeks)
+    me = (league or {}).get("me") or (1 if manual else None)
+    data = {"meta": {}, "players": {}, "teams": [], "playbook": PLAYBOOK}
+    lists = set()
+
+    if teams and me is not None and any(tm["id"] == me for tm in teams):
+        my = next(tm for tm in teams if tm["id"] == me)
+        rows = [dict(P[p], slot=slot_of.get(p)) for p in my["pids"] if p in P]
+        opp_rows = None
+        if league:
+            m = next((g for g in league["schedule"] if g["period"] == _matchup_period(league, week)
+                      and me in (g["home"], g["away"])), None)
+            if m:
+                oid = m["away"] if m["home"] == me else m["home"]
+                ot = next((tm for tm in teams if tm["id"] == oid), None)
+                if ot:
+                    opp_rows = [dict(P[p], slot=slot_of.get(p)) for p in ot["pids"] if p in P]
+                    data["matchup_opp"] = oid
+        data["lineup"] = lineup.lineup_report(me, rows, slots, opp_rows)
+        sells = trades.sell_high(P, my["pids"])
+        data["sell_high"] = sells
+        lists.update(my["pids"])
+        if league and len(teams) > 1:
+            prof = trades.team_profiles(teams, P, strength, me, slots, week, sched_byes)
+            data["profiles"] = prof
+            buys = trades.buy_low(P, owner_of, me)
+            data["buy_low"] = buys
+            finder = trades.TradeFinder(S, P, strength, teams, me, prof)
+            data["trades"] = finder.run([s["pid"] for s in sells])
+            for e in data["trades"]:
+                lists.update(e["give"] + e["get"] + e["my_drops"] + e["their_drops"])
+                for st in e.get("ladder", []):
+                    lists.update(st["give"] + st["get"])
+            lists.update(b["pid"] for b in buys)
+            odds = extras.playoff_odds(teams, league["schedule"], strength, reg_weeks, week, league["playoff_teams"])
+            for p_ in prof.values():
+                p_["playoff_odds"] = odds.get(p_["id"])
+        free = [pid for pid, r in P.items() if pid not in owner_of and r["pos"] in ("QB", "RB", "WR", "TE", "K", "DST")
+                and (not league or espn_status.get(pid) in (None, "FREEAGENT", "WAIVERS"))
+                and (league or (r.get("pct_owned") is not None and r["pct_owned"] < 50))]
+        my_team = next(tm for tm in teams if tm["id"] == me)
+        data["waivers"] = extras.waivers(P, free, my["pids"], strength, week, trending,
+                                         (league or {}).get("faab_budget"), my_team.get("faab_left"), slots)
+        for w in data["waivers"]["adds"]:
+            lists.update([w["pid"], w["drop"]])
+    else:
+        data["rising"] = extras.rising(P, trending)
+        lists.update(x["pid"] for x in data["rising"])
+
+    targets = set(lists)
+    data["playoffs"] = extras.playoff_schedule(P, sched, dvp, playoff_weeks, targets)
+
+    # Publish everyone fantasy-relevant, plus anyone referenced above.
+    keep = {pid for pid, r in P.items() if pid in lists or r.get("on_team") is not None or (r.get("vorp") or 0) > 0
+            or (r.get("proj") or 0) >= 4 or (r.get("fc_value") or 0) >= 300}
+    data["players"] = {pid: _public(P[pid]) for pid in keep}
+    data["teams"] = [{"id": tm["id"], "name": tm["name"], "owner": tm.get("owner"), "abbrev": tm.get("abbrev"),
+                      "record": f"{tm['wins']}-{tm['losses']}" + (f"-{tm['ties']}" if tm["ties"] else ""),
+                      "points_for": tm["points_for"], "pids": [p for p in tm["pids"] if p in data["players"]],
+                      "faab_left": tm.get("faab_left")} for tm in teams]
+    data["team_ctx"] = {k: {kk: vv for kk, vv in v.items() if kk != "qb_epa"} for k, v in ctx.items()}
+    data["dvp"] = {"factor": dvp, "rank": dvp_meta.get("ranks", {}), "allowed": dvp_meta.get("allowed", {})}
+    data["meta"] = {
+        "generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "season": cfg.season, "week": week, "mode": "league" if league else ("manual" if manual else "public"),
+        "league_name": (league or {}).get("name"), "league_error": league_err, "me": me,
+        "slots": slots, "ppr": ppr, "teams": n_teams, "playoff_weeks": playoff_weeks, "reg_weeks": reg_weeks,
+        "ros_weeks": ros_weeks, "trade_deadline": (league or {}).get("trade_deadline"),
+        "faab_budget": (league or {}).get("faab_budget"), "replacement": S.get("replacement"),
+        "sources": status, "build_seconds": round(time.time() - started, 1),
+    }
+
+    os.makedirs(args.out, exist_ok=True)
+    payload = json.dumps(clean(data), separators=(",", ":"))
+    for f in ("data.json", "data.enc.json"):
+        try:
+            os.remove(os.path.join(args.out, f))
+        except FileNotFoundError:
+            pass
+    if cfg.site_password:
+        with open(os.path.join(args.out, "data.enc.json"), "w") as f:
+            f.write(crypto.encrypt(payload, cfg.site_password))
+        log.info("wrote encrypted data (%d KB raw)", len(payload) // 1024)
+    else:
+        with open(os.path.join(args.out, "data.json"), "w") as f:
+            f.write(payload)
+        log.info("wrote data.json (%d KB)", len(payload) // 1024)
+    log.info("done in %.1fs: %d players, mode=%s, week=%s", time.time() - started, len(data["players"]),
+             data["meta"]["mode"], week)
+
+
+def _matchup_period(league, week):
+    # Regular season matchup periods line up with NFL weeks in nearly every ESPN league.
+    return week if week <= league["reg_weeks"] else league["reg_weeks"] + 1 + (week - league["reg_weeks"] - 1)
+
+
+def _attach_espn(p, e, keep=False):
+    for src, dst in (("espn_proj", "espn_proj"), ("injury", "espn_injury"), ("pct_owned", "pct_owned"),
+                     ("pct_change", "pct_change"), ("pct_started", "pct_started"), ("espn_season_pts", "espn_season_pts")):
+        if e.get(src) is not None and not (keep and p.get(dst) is not None):
+            p[dst] = e[src]
+
+
+PUBLIC = ("pid", "name", "pos", "team", "age", "headshot", "opp", "home", "implied", "spread", "proj", "floor", "ceil",
+          "sd", "sources", "notes", "injury", "injury_detail", "injury_notes", "locked", "actual", "kickoff", "weather",
+          "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "fc_value", "fc_estimated",
+          "fc_trend30", "model_value", "edge", "fp_ros_overall", "fp_ros_pos_rank", "fp_week_rank", "pct_owned",
+          "pct_change", "season_pts", "pts_rank", "ros_rank", "week_rank", "on_team", "slot", "usage", "depth")
+
+
+def _public(r):
+    return {k: r.get(k) for k in PUBLIC if r.get(k) is not None}
+
+
+if __name__ == "__main__":
+    main()

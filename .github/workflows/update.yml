@@ -1,0 +1,58 @@
+name: Update fantasy data and site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Times are UTC. Every morning, plus game-week moments when news moves projections.
+    - cron: "17 12 * * *"    # daily ~8am ET: after waivers, new injury reports, Vegas moves
+    - cron: "40 21 * * 4"    # Thu before TNF
+    - cron: "10 21 * * 5"    # Fri after final injury reports
+    - cron: "45 15 * * 0"    # Sun after 1pm inactives
+    - cron: "25 19 * * 0"    # Sun after 4pm inactives
+    - cron: "50 23 * * 0"    # Sun before SNF
+    - cron: "30 22 * * 1"    # Mon before MNF
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Build data
+        env:
+          ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          ESPN_SWID: ${{ secrets.ESPN_SWID }}
+          MY_TEAM_ID: ${{ secrets.MY_TEAM_ID }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+        run: python -m pipeline.build --out site/data
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
