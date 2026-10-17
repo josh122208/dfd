@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ..sources import weather as wx
-from . import injury
+from . import adjust, injury
 from .context import qb_change
 
 CV = {"QB": 0.38, "RB": 0.55, "WR": 0.62, "TE": 0.68, "K": 0.45, "DST": 0.6}
@@ -81,6 +81,16 @@ def project(S):
         cw = st[st.week == week]
         actual_this_week = dict(zip(cw.player_id, cw.fantasy_points.fillna(0) + ppr * cw.receptions.fillna(0)))
 
+    statuses = {pid: injury_status(pid, p, inj_week, S["sleeper_players"]) for pid, p in reg.players.items()
+                if p.get("pos") in CV and p.get("team")}
+    S["starting_qb"] = {}
+    for r in sched[sched.week == week].itertuples():
+        qid = r.row.get("home_qb_id") if r.home else r.row.get("away_qb_id")
+        if isinstance(qid, str):
+            S["starting_qb"][r.team] = qid
+    vac = adjust.vacated(S, statuses)
+    S["vacated"] = vac
+
     out = {}
     for pid, p in reg.players.items():
         pos, team = p.get("pos"), p.get("team")
@@ -100,12 +110,15 @@ def project(S):
         c = ctx.get(team, {})
         g = by_team_week.get((team, week))
         notes, mult = [], 1.0
-        status, inj_detail = injury_status(pid, p, inj_week, S["sleeper_players"])
+        status, inj_detail = statuses.get(pid, (None, None))
 
         # Our own usage-based number.
         model = None
         if pos in ("QB", "RB", "WR", "TE") and u:
             model = u["base"]
+            if pid in vac:
+                model += vac[pid]["pts"]
+                notes.extend(vac[pid]["notes"])
         elif pos == "K" and g is not None and pd.notna(g.implied):
             model = 3.0 + 0.24 * g.implied
         elif pos == "DST" and g is not None and pd.notna(g.opp_implied):
@@ -154,8 +167,13 @@ def project(S):
                 f_qb = 1 - (1 - f_qb) * 0.4
             if qb_note:
                 notes.append(qb_note)
+        f_tr, tr_notes = adjust.trench(S, pos, team, g.opp, pid, u) if pos in ("QB", "RB", "WR", "TE") else (1.0, [])
+        notes.extend(tr_notes)
+        f_coach, coach_note = adjust.coach(S, pid)
+        if coach_note:
+            notes.append(coach_note)
         if model is not None and pos in ("QB", "RB", "WR", "TE"):
-            model *= f_team * f_dvp * f_script * f_wx * f_qb
+            model *= f_team * f_dvp * f_script * f_wx * f_qb * f_tr * f_coach
         elif model is not None:
             model *= f_wx
 
@@ -172,7 +190,7 @@ def project(S):
         kick = kickoff_dt({"gameday": g.gameday, "gametime": g.gametime})
         locked = bool(g.final) or (kick is not None and kick <= now)
         row = _row(p, u, src, None, None, None, None, notes, status, inj_detail, g, locked)
-        row.update(mult=mult, weather=w if w and not w.get("indoor") else None, f_wx=f_wx,
+        row.update(mult=mult, weather=w if w and not w.get("indoor") else None, f_wx=f_wx, f_coach=f_coach,
                    kickoff=kick.isoformat() if kick else None,
                    actual=round(float(actual_this_week[pid]), 1) if locked and pid in actual_this_week else None)
         out[pid] = row
@@ -301,10 +319,15 @@ def _rest_of_season(out, S, by_team_week, weeks, playoff_weeks):
                 f = dvp[g.opp][pos] ** 0.5
                 own *= f
                 sos.append(dvp[g.opp][pos])
+            ahead = w - week
+            vb = S.get("vacated", {}).get(pid)
+            if vb and ahead < vb["weeks"]:
+                own += vb["pts"]
+            if ahead <= 2 and r.get("f_coach"):
+                own *= r["f_coach"]
             sl = S["sleeper_proj"].get(w, {}).get(sid)
             val = 0.5 * own + 0.5 * sl if sl is not None else own
             # Long injuries: IR is at least 4 games; "Out" mostly costs this week only.
-            ahead = w - week
             if status in ("IR", "PUP") and ahead < 4:
                 val = 0.0
             elif status in ("IR", "PUP"):
@@ -317,11 +340,16 @@ def _rest_of_season(out, S, by_team_week, weeks, playoff_weeks):
                 # Chance he's hurt by then (beyond what the current designation already covers).
                 val *= injury.availability(rk[0], rk[1], ahead)
             ros.append([w, round(float(val), 2)])
-        pts = [v for _, v in ros]
-        play = [v for w, v in ros if w in playoff_weeks]
         r["ros"] = ros
-        r["ros_pts"] = round(float(sum(pts)), 1)
-        active = [v for v in pts if v > 0]
-        r["ros_ppg"] = round(float(np.mean(active)), 2) if active else 0.0
-        r["playoff_pts"] = round(float(sum(play)), 1)
         r["sos_ros"] = round(float(np.mean(sos)), 3) if sos else None
+        _totals(r, playoff_weeks)
+    for pid in adjust.handcuffs(out, S):
+        _totals(out[pid], playoff_weeks)
+
+
+def _totals(r, playoff_weeks):
+    pts = [v for _, v in r["ros"]]
+    r["ros_pts"] = round(float(sum(pts)), 1)
+    active = [v for v in pts if v > 0]
+    r["ros_ppg"] = round(float(np.mean(active)), 2) if active else 0.0
+    r["playoff_pts"] = round(float(sum(v for w, v in r["ros"] if w in playoff_weeks)), 1)

@@ -11,13 +11,14 @@ import os
 import time
 
 import numpy as np
+import pandas as pd
 
 from . import crypto
 from .analysis import extras, lineup, trades
 from .analysis.persuasion import PLAYBOOK
 from .config import Config
 from .model import context, injury, players as pl, projections, values
-from .sources import espn, market, nflverse
+from .sources import espn, market, news, nflverse
 from .util import log, norm_team, r1, safe
 
 DEFAULT_SLOTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1, "DST": 1}
@@ -173,6 +174,16 @@ def main():
          "sleeper_players": sp, "slots": slots, "teams": n_teams,
          "trade_deadline": (league or {}).get("trade_deadline")}
     S["inj_hist"] = injury.history(t, reg, usage, sched, week)
+    S["usage_weekly"] = u
+    S["trench"] = context.trenches_and_style(t["pbp"], t.get("ftn", pd.DataFrame()))
+    # Coach talk: recent news for anyone rostered or fantasy-relevant (cached for 3 hours between runs).
+    want = {pid: {"espn_id": p.get("espn_id"), "name": p.get("name"), "team": p.get("team")}
+            for pid, p in reg.players.items()
+            if p.get("espn_id") and p.get("pos") in ("QB", "RB", "WR", "TE") and p.get("team")
+            and (p.get("rostered") or (p.get("fc_value") or 0) >= 400 or (p.get("fp_ros_overall") or 999) <= 220)}
+    S["news"] = safe(lambda: news.player_news(want, ctx), {}, "player news")
+    status["coach_news"] = f"{len(S['news'])} players" if S["news"] else "unavailable"
+    team_news = safe(lambda: news.team_news(set(sched.team), ctx), {}, "team news")
     P = projections.project(S)
     # Every analysis below indexes P by roster pid; drop anything that couldn't be projected (non-fantasy positions).
     for tm in teams:
@@ -204,6 +215,8 @@ def main():
             r["injury_notes"] = sl["injury_notes"]
         if sl.get("depth_order"):
             r["depth"] = sl["depth_order"]
+        if S["news"].get(pid):
+            r["news"] = S["news"][pid]
     values.compute(P, S)
 
     strength = lineup.Strength(P, slots, ros_weeks, week, playoff_weeks)
@@ -235,8 +248,10 @@ def main():
             lev = {me: {g["week"]: g["leverage"] for g in sim.get("me", {}).get("games", [])}}
             strength.push_weights(odds, lev, reg_weeks)
             prof = trades.team_profiles(teams, P, strength, me, slots, week, sched_byes)
+            tend = trades.manager_tendencies(league.get("tx"), teams, reg, league.get("faab_budget"))
             for p_ in prof.values():
                 p_["playoff_odds"] = odds.get(p_["id"])
+                p_["tendency"] = tend.get(p_["id"], {})
             data["profiles"] = prof
             data["season"] = season_report(sim.get("me"), my["pids"], P, strength, reg_weeks, prof, byes)
             buys = trades.buy_low(P, owner_of, me)
@@ -253,9 +268,13 @@ def main():
                 and (league or (r.get("pct_owned") is not None and r["pct_owned"] < 50))]
         my_team = next(tm for tm in teams if tm["id"] == me)
         data["waivers"] = extras.waivers(P, free, my["pids"], strength, week, trending,
-                                         (league or {}).get("faab_budget"), my_team.get("faab_left"), slots, me)
+                                         (league or {}).get("faab_budget"), my_team.get("faab_left"), slots, me,
+                                         espn_status, my_team.get("waiver_rank"), n_teams)
+        data["waivers"]["waiver_rank"] = my_team.get("waiver_rank")
         for w in data["waivers"]["adds"]:
             lists.update([w["pid"], w["drop"]])
+        for x in data["waivers"].get("stashes", []):
+            lists.update([x["pid"], x["for"]])
     else:
         data["rising"] = extras.rising(P, trending)
         lists.update(x["pid"] for x in data["rising"])
@@ -272,6 +291,11 @@ def main():
                       "points_for": tm["points_for"], "pids": [p for p in tm["pids"] if p in data["players"]],
                       "faab_left": tm.get("faab_left")} for tm in teams]
     data["team_ctx"] = {k: {kk: vv for kk, vv in v.items() if kk != "qb_epa"} for k, v in ctx.items()}
+    tr = S["trench"][0]
+    for k, v in data["team_ctx"].items():
+        v.update({kk: vv for kk, vv in tr.get(k, {}).items() if kk.endswith("_rank")})
+        if team_news.get(k):
+            v["coach_news"] = team_news[k]
     data["dvp"] = {"factor": dvp, "rank": dvp_meta.get("ranks", {}), "allowed": dvp_meta.get("allowed", {})}
     data["meta"] = {
         "generated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -366,7 +390,7 @@ PUBLIC = ("pid", "name", "pos", "team", "age", "headshot", "opp", "home", "impli
           "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "fc_value", "fc_estimated",
           "fc_trend30", "model_value", "edge", "fp_ros_overall", "fp_ros_pos_rank", "fp_week_rank", "pct_owned",
           "pct_change", "season_pts", "pts_rank", "ros_rank", "week_rank", "on_team", "slot", "usage", "depth",
-          "inj_risk")
+          "inj_risk", "handcuff", "news")
 
 
 def _public(r):

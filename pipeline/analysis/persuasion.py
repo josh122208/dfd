@@ -16,6 +16,9 @@ import datetime as dt
 from ..model.projections import ordinal
 
 PLAYBOOK = [
+    {"name": "Feed what they chase", "how": "Managers repeat themselves: the positions they ask for in trades and grab "
+     "on waivers show what they believe they need. Offer that position and the deal sells itself.",
+     "source": "League trade and waiver history"},
     {"name": "Lead with their need", "how": "Open by naming the hole in their lineup (an injury, a bye week crunch, a weak flex). "
      "People accept trades that solve a problem they already feel.", "source": "FantasyPros Trading 101 (2026)"},
     {"name": "Sell the box score", "how": "Most managers judge players by fantasy points scored. Cite total points, last week's "
@@ -104,6 +107,10 @@ def pitch(e, P, prof, teams, me, S):
     if hook:
         lines.append(hook)
 
+    tend = pr.get("tendency") or {}
+    if tend.get("chases") and tend["chases"] in give_pos and not hook:
+        lines.append(f"Saw you've been hunting for {tend['chases']} help.")
+        tactics.append("Feed what they chase")
     # 2. The offer
     lines.append(f"Would you do {_names(give, P)} for {_names(get, P)}?")
 
@@ -185,7 +192,9 @@ def pitch(e, P, prof, teams, me, S):
         profile_notes.append(f"{pr['record']} and chasing a playoff spot: they want points now, not 'upside'.")
     elif pr["mood"] == "contender":
         profile_notes.append(f"{pr['record']} contender: pitch it as the piece that wins a title.")
-    if not pr["trades"]:
+    if tend.get("traits"):
+        profile_notes.extend(tend["traits"])
+    elif not pr["trades"]:
         profile_notes.append("Hasn't traded yet this season: keep it simple and clearly fair.")
     else:
         profile_notes.append(f"Has made {pr['trades']} trade(s): open to dealing.")

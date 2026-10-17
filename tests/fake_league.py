@@ -74,7 +74,8 @@ def build_fake(season=2026, week=6):
         teams.append({"id": tid, "abbrev": f"T{tid}", "name": f"{OWNERS[tid - 1]}'s Team", "owners": [swid],
                       "record": {"overall": {"wins": w, "losses": 5 - w, "ties": 0, "pointsFor": 500 + 20 * w,
                                              "pointsAgainst": 520}},
-                      "transactionCounter": {"trades": tid % 3, "acquisitions": 4, "acquisitionBudgetSpent": 20}})
+                      "waiverRank": 13 - tid,
+                      "transactionCounter": {"trades": tid % 3, "acquisitions": 4, "acquisitionBudgetSpent": 0}})
         entries, counts = [], {}
         for p in plist:
             slot = SLOT_ID[p["pos"]]
@@ -99,10 +100,22 @@ def build_fake(season=2026, week=6):
                          "scheduleSettings": {"matchupPeriodCount": 14, "playoffTeamCount": 6,
                                               "playoffMatchupPeriodLength": 1},
                          "tradeSettings": {"deadlineDate": int(pd.Timestamp("2026-11-18").timestamp() * 1000)},
-                         "acquisitionSettings": {"isUsingAcquisitionBudget": True, "acquisitionBudget": 100}},
+                         "acquisitionSettings": {"isUsingAcquisitionBudget": False, "acquisitionType": "WAIVERS_TRADITIONAL"}},
             "teams": teams, "members": members, "schedule": schedule}
-    fas = [{"id": p["id"], "onTeamId": 0, "status": "FREEAGENT", "player": player_obj(p, False)}
-           for p in pool if p["id"] not in taken][:400]
+    fas = [{"id": p["id"], "onTeamId": 0, "status": "WAIVERS" if i % 4 == 0 else "FREEAGENT", "player": player_obj(p, False)}
+           for i, p in enumerate([p for p in pool if p["id"] not in taken][:400])]
+    # A little trade/waiver history: team 2 chases RBs and proposes a lot; team 6 declines everything.
+    tx = []
+    rb_ids = [p["id"] for p in pool if p["pos"] == "RB"]
+    for n in range(4):
+        tx.append({"id": f"p{n}", "type": "TRADE_PROPOSAL", "status": "CANCELED", "teamId": 2, "items": [
+            {"type": "TRADE", "playerId": rb_ids[n], "fromTeamId": 6, "toTeamId": 2},
+            {"type": "TRADE", "playerId": rb_ids[n + 20], "fromTeamId": 2, "toTeamId": 6}]})
+        tx.append({"id": f"d{n}", "type": "TRADE_DECLINE", "status": "EXECUTED", "teamId": 6, "items": []})
+    for n in range(7):
+        tx.append({"id": f"w{n}", "type": "WAIVER", "status": "EXECUTED", "teamId": 2, "bidAmount": 0,
+                   "items": [{"type": "ADD", "playerId": rb_ids[60 + n], "toTeamId": 2}]})
+    base["_tx"] = tx
     return base, {"teams": rost_teams}, fas
 
 
@@ -110,7 +123,7 @@ def main():
     base, rost, fas = build_fake()
 
     def fake_load(self):
-        return espn.parse_league(base, rost, fas, [], self.cfg)
+        return espn.parse_league(base, rost, fas, base.get("_tx", []), self.cfg)
 
     espn.EspnLeague.load = fake_load
     os.environ.setdefault("ESPN_LEAGUE_ID", "123")

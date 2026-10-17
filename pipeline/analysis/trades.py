@@ -179,10 +179,17 @@ class TradeFinder:
         # Managers mostly judge by trade value and box scores, but a deal that visibly weakens their lineup
         # gets noticed. Coefficients are hand-tuned, not fitted: treat p_accept as a ranking signal.
         z = 4 * (fair - 1) + 0.8 * (min(perception, 1.6) - 1) + 0.5 * th_gain + 0.1
-        if pr["trades"]:
+        tend = pr.get("tendency") or {}
+        if pr["trades"] or tend.get("sent", 0) >= 3 or tend.get("accepted"):
             z += 0.25
         if pr["mood"] == "desperate":
             z += 0.2
+        if tend.get("chases") and tend["chases"] in {self.P[p]["pos"] for p in give}:
+            z += 0.3  # giving them what they keep chasing
+        if tend.get("picky"):
+            z -= 0.3
+        if tend.get("dormant"):
+            z -= 0.3
         p_accept = 1 / (1 + math.exp(-z))
         return {"team": tid, "give": list(give), "get": list(get), "my_gain": round(my_gain, 2),
                 "their_gain": round(th_gain, 2), "fair": round(fair, 3), "perception": round(perception, 2),
@@ -274,3 +281,73 @@ class TradeFinder:
                               "note": "Add this only after they counter. Past this, the trade stops helping you."})
                 break
         return steps
+
+
+def manager_tendencies(tx, teams, reg, faab_budget=None):
+    """Read every manager's trade and waiver history: who sends offers, who declines, what they chase."""
+    if not tx:
+        return {}  # no history loaded (e.g. browser-synced league): don't label anyone
+    pos_of = {str(p["espn_id"]): p.get("pos") for p in reg.players.values() if p.get("espn_id")}
+    T = {t["id"]: {"sent": 0, "received": 0, "declined": 0, "accepted": 0, "adds": 0, "drops": 0, "bids": [],
+                   "wants": {}} for t in teams}
+    seen = set()
+    for t in tx or []:
+        if t.get("id") in seen:
+            continue
+        seen.add(t.get("id"))
+        typ, st, team, items = t.get("type"), t.get("status"), t.get("team"), t.get("items") or []
+        if team not in T:
+            continue
+        if typ == "TRADE_PROPOSAL":
+            T[team]["sent"] += 1
+            partners = {i.get("from") for i in items} | {i.get("to") for i in items}
+            for p in partners - {team, None, -1}:
+                if p in T:
+                    T[p]["received"] += 1
+            for i in items:
+                if i.get("to") == team:  # what they asked for
+                    pos = pos_of.get(str(i.get("player")))
+                    if pos:
+                        T[team]["wants"][pos] = T[team]["wants"].get(pos, 0) + 1
+        elif typ == "TRADE_DECLINE":
+            T[team]["declined"] += 1
+        elif typ in ("TRADE_ACCEPT", "TRADE_UPHOLD") and st == "EXECUTED":
+            T[team]["accepted"] += 1
+        elif typ in ("WAIVER", "FREEAGENT") and st == "EXECUTED":
+            for i in items:
+                if i.get("type") == "ADD":
+                    T[team]["adds"] += 1
+                    pos = pos_of.get(str(i.get("player")))
+                    if pos in ("QB", "RB", "WR", "TE"):
+                        T[team]["wants"][pos] = T[team]["wants"].get(pos, 0) + 1
+                elif i.get("type") == "DROP":
+                    T[team]["drops"] += 1
+            if typ == "WAIVER" and t.get("bid"):
+                T[team]["bids"].append(t["bid"])
+    adds = sorted(v["adds"] for v in T.values())
+    med_adds = adds[len(adds) // 2] if adds else 0
+    for v in T.values():
+        traits, w = [], v["wants"]
+        tot = sum(w.values())
+        top = max(w, key=w.get) if w else None
+        v["chases"] = top if top and w[top] >= 3 and w[top] / tot >= 0.4 else None
+        if v["sent"] >= 3:
+            traits.append(f"Sends a lot of trade offers ({v['sent']}): open to dealing")
+        if v["accepted"]:
+            traits.append(f"Has accepted {v['accepted']} trade{'s' if v['accepted'] > 1 else ''}")
+        if v["declined"] >= 2 and not v["accepted"]:
+            traits.append(f"Has declined {v['declined']} offers and accepted none: only a clearly good deal works")
+            v["picky"] = True
+        if v["chases"]:
+            traits.append(f"Keeps chasing {v['chases']}s (trade asks and pickups)")
+        if v["adds"] >= max(6, 1.5 * med_adds):
+            traits.append(f"Very active on waivers ({v['adds']} pickups): reacts fast to news")
+        if v["bids"] and faab_budget and max(v["bids"]) >= 0.25 * faab_budget:
+            traits.append(f"Spends big FAAB (max ${max(v['bids'])})")
+        if v["sent"] == 0 and v["adds"] <= 2 and not v["accepted"] and not v["declined"]:
+            traits.append("Barely active: message them directly so the offer doesn't sit")
+            v["dormant"] = True
+        v["traits"] = traits
+        v["max_bid"] = max(v["bids"]) if v["bids"] else 0
+        del v["bids"]
+    return T

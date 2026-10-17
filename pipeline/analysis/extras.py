@@ -4,7 +4,8 @@ import numpy as np
 POS_GROUPS = ("QB", "RB", "WR", "TE")
 
 
-def waivers(players, free_ids, my_pids, strength, week, trending, faab_budget, faab_left, slots, me=None):
+def waivers(players, free_ids, my_pids, strength, week, trending, faab_budget, faab_left, slots, me=None,
+            waiver_status=None, waiver_rank=None, n_teams=12):
     """Rank free agents by how much they improve MY lineup, after dropping my least useful player."""
     base = strength.total(my_pids, me)
     base_week = strength.weekly(my_pids)
@@ -60,10 +61,38 @@ def waivers(players, free_ids, my_pids, strength, week, trending, faab_budget, f
             share = min(0.45, 0.025 * gain * 4 + min(tr.get("add", 0), 60000) / 60000 * 0.12)
             bid = int(round(max(1, share * (faab_left if faab_left is not None else faab_budget))))
         out.append({"pid": pid, "drop": d, "gain_ros": round(gain, 2), "gain_week": round(gain_now, 1),
-                    "adds_48h": tr.get("add", 0), "faab": bid, "why": why})
+                    "adds_48h": tr.get("add", 0), "faab": bid, "why": why,
+                    "on_waivers": (waiver_status or {}).get(pid) == "WAIVERS"})
     out.sort(key=lambda x: -(x["gain_ros"] + 0.35 * x["gain_week"]))
+    # Waiver-order leagues: free agents cost nothing; a claim costs your priority, so save it for real upgrades.
+    if not faab_budget:
+        claims = [x for x in out if x["on_waivers"]]
+        best = claims[0]["gain_ros"] if claims else 0
+        pr = f"#{waiver_rank} " if waiver_rank else ""
+        for x in out:
+            if not x["on_waivers"]:
+                x["how"] = "Add now"
+            elif x["gain_ros"] >= max(1.5, 0.7 * best) or (x["gain_week"] >= 4 and x is claims[0]):
+                x["how"] = f"Worth your {pr}claim"
+            else:
+                x["how"] = "Wait until he clears"
     stream = sorted([x for x in out if x["gain_week"] > 0.5], key=lambda x: -x["gain_week"])[:8]
-    return {"adds": out[:25], "streamers": stream}
+    # Handcuffs: backups who'd inherit a starter's job, available now, plus insurance for your own starters.
+    mine = set(my_pids)
+    free = set(free_ids)
+    stashes = []
+    for pid in free:
+        hc = players[pid].get("handcuff")
+        if hc and hc["contingent_pts"] >= 1.5:
+            stashes.append({"pid": pid, "for": hc["for"], "yours": hc["for"] in mine,
+                            "contingent": hc["contingent_pts"], "if_out": hc["if_starter_out"]})
+    for pid, r in players.items():
+        hc = r.get("handcuff")
+        if hc and hc["for"] in mine and pid not in mine and pid not in free:
+            stashes.append({"pid": pid, "for": hc["for"], "yours": True, "contingent": hc["contingent_pts"],
+                            "if_out": hc["if_starter_out"], "owner": r.get("on_team")})
+    stashes.sort(key=lambda x: (-x["yours"], -x["contingent"]))
+    return {"adds": out[:25], "streamers": stream, "stashes": stashes[:12]}
 
 
 def rising(players, trending, limit=30):
