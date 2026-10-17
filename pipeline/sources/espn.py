@@ -3,8 +3,8 @@ import json
 
 from ..util import get_json, log, norm_team, safe
 
-FANTASY = "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/{season}/segments/0/leagues/{league}"
-DEFAULTS = "https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/{season}/segments/0/leaguedefaults/{kind}"
+FANTASY = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league}"
+DEFAULTS = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leaguedefaults/{kind}"
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 
 POS = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DST"}

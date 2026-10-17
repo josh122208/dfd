@@ -6,7 +6,7 @@
    headers. Every attempt is recorded and shown in the site tab if all of them fail. */
 (async () => {
   const SITE = "__SITE__";
-  const V = "v4";
+  const V = "v5";
   const q = new URLSearchParams(location.search);
   const league = q.get("leagueId");
   if (!/(^|\.)espn\.com$/.test(location.hostname) || !league) {
@@ -32,20 +32,26 @@
 
   /* Data URLs the ESPN page itself loaded: tells us the current host and app version. */
   const used = performance.getEntriesByType("resource").map((e) => e.name)
-    .filter((u) => /espn/.test(u) && /(apps\/fantasy|\/ffl\/|leagues\/)/.test(u));
-  const hosts = [...new Set(used.filter((u) => /\/apps\/fantasy\/ffl\//.test(u)).map((u) => new URL(u).origin))];
-  ["https://lm-api-reads.fantasy.espn.com", "https://fantasy.espn.com"].forEach((h) => { if (!hosts.includes(h)) hosts.push(h); });
+    .filter((u) => /espn/.test(u) && /(apis\/v3|apps\/fantasy|\/ffl\/|leagues\/)/.test(u));
+  /* ESPN moved league data to /apis/v3/games/ffl/...; prefer the exact league URL the page itself used. */
+  const bases = [];
+  used.forEach((u) => {
+    const m = u.match(/^(https:\/\/[^/]+\/(?:apis\/v3\/games|apps\/fantasy)\/ffl\/seasons\/\d+\/segments\/0\/leagues\/\d+)/);
+    if (m && m[1].endsWith("/leagues/" + league) && !bases.includes(m[1])) bases.push(m[1]);
+  });
+  [`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${league}`,
+    `https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/${season}/segments/0/leagues/${league}`]
+    .forEach((b) => { if (!bases.includes(b)) bases.push(b); });
   const ver = (document.documentElement.innerHTML.match(/kona-PROD-[\w.-]+/) || ["kona-PROD-m.fc.latest.kona-hyper"])[0];
   const headerSets = [
-    { "x-fantasy-source": "kona", "x-fantasy-platform": ver, accept: "application/json" },
     {},
+    { "x-fantasy-source": "kona", "x-fantasy-platform": ver, accept: "application/json" },
   ];
   const log = [];
   let base = null, hdrs = null;
-  for (const h of hosts) {
+  for (const b of bases) {
     for (const hs of headerSets) {
-      const b = `${h}/apps/fantasy/ffl/seasons/${season}/segments/0/leagues/${league}`;
-      const label = `${new URL(h).hostname} ${Object.keys(hs).length ? "+app headers" : "plain"}`;
+      const label = `${new URL(b).pathname.split("/ffl/")[0]} ${Object.keys(hs).length ? "+app headers" : "plain"}`;
       try {
         const r = await fetch(b + "?view=mStatus", { credentials: "include", headers: hs });
         const ct = r.headers.get("content-type") || "";
