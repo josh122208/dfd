@@ -1,5 +1,5 @@
 /* Runs on fantasy.espn.com (as a bookmarklet). Reads your league with your own ESPN login and hands it to the site.
-   ESPN blocks cloud servers like GitHub's, so this is how league data gets out. Nothing is sent anywhere except
+   Alternative to the ESPN cookie secrets: no cookies leave your browser. Nothing is sent anywhere except
    the site window it opens. SITE is replaced with the page's own URL when the bookmarklet link is built.
    ESPN's data server rejects requests that don't look like they come from ESPN's own app, so this copies what the
    page itself does: it finds the data hosts the page already used (performance entries) and sends ESPN's app

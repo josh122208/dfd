@@ -53,13 +53,14 @@ def main():
     nfl_week = context.current_week(t["games"])
 
     league, league_err, synced = None, None, None
-    # ESPN blocks GitHub's servers, so in Actions we go straight to the browser-synced snapshot.
-    if cfg.league_id and not os.environ.get("GITHUB_ACTIONS"):
+    # Live fetch needs ESPN_LEAGUE_ID (+ cookies for private leagues); the browser-synced snapshot is the fallback.
+    if cfg.league_id:
         try:
             league = espn.EspnLeague(cfg).load()
             status["espn_league"] = "ok (live)"
         except PermissionError:
-            league_err = "ESPN refused access. Private league: set ESPN_S2 and ESPN_SWID."
+            league_err = ("ESPN refused access. Your league is private, so add (or refresh) the ESPN_S2 and ESPN_SWID "
+                          "secrets, or use the sync bookmark.")
         except Exception as e:  # noqa: BLE001
             league_err = f"ESPN league failed to load: {e}"
     if league is None:

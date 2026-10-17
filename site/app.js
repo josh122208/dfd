@@ -637,8 +637,16 @@ async function renderConnect(el) {
   const code = "javascript:" + encodeURIComponent(src.replace(/\/\*[\s\S]*?\*\//g, "").replace("__SITE__", site).replace(/\n\s*/g, " "));
   const slug = repoSlug() || "josh122208/dfd";
   el.innerHTML = `<h2>Connect your ESPN league</h2>
-    <div class="card small">${m.league_synced ? `✅ Last synced <b>${new Date(m.league_synced).toLocaleString()}</b>. Re-sync after trades, pickups or lineup changes. Projections, injuries and Vegas lines refresh automatically every day either way.` : "Not synced yet."}</div>
-    <div class="card small"><p style="margin-top:0"><b>Why the extra step?</b> ESPN blocks cloud servers (including GitHub's) from its fantasy API, so your browser, where you're already logged in, reads the league and saves an encrypted copy to your repo. ESPN cookies never leave your browser.</p>
+    <div class="card small">${/^ok/.test(m.sources?.espn_league || "") ? "✅ Your league updates automatically on every refresh." : m.league_synced ? `✅ Last synced <b>${new Date(m.league_synced).toLocaleString()}</b>. Re-sync after trades, pickups or lineup changes.` : "Not connected yet."}</div>
+    <div class="card small"><h3 style="margin-top:0">Option A (recommended): automatic</h3>
+    <p>Your league is private, so GitHub needs your ESPN login cookies once. Then rosters, lineups and standings update every time the site refreshes.</p><ol>
+      <li>On a computer, open <a href="https://fantasy.espn.com/football/" target="_blank" rel="noopener">fantasy.espn.com</a> in Chrome while logged in, press <b>F12</b> → <b>Application</b> tab → <b>Cookies</b> → <b>https://fantasy.espn.com</b>.</li>
+      <li>Copy the values of <b>espn_s2</b> (long) and <b>SWID</b> (looks like <span class="mono">{ABC-123…}</span>, keep the braces).</li>
+      <li>In GitHub: <a href="https://github.com/${esc(slug)}/settings/secrets/actions" target="_blank" rel="noopener">repo Settings → Secrets → Actions</a> → add <b>ESPN_LEAGUE_ID</b> (your league number), <b>ESPN_S2</b> and <b>ESPN_SWID</b>.</li>
+      <li>Actions → Update fantasy data and site → <b>Run workflow</b>.</li>
+    </ol><p class="muted">Cookies stay in GitHub's encrypted secrets. They expire about once a year; the site shows a banner when they need refreshing.</p></div>
+    <div class="card small"><h3 style="margin-top:0">Option B: sync from your browser</h3>
+    <p>No cookies to copy: your logged-in browser reads the league and saves an encrypted copy to your repo. You re-sync by hand after roster changes.</p>
     <h3>One-time setup</h3><ol>
       <li><b>Make a GitHub token.</b> On GitHub: Settings → Developer settings → Personal access tokens → <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained tokens → Generate new token</a>. Repository access: <b>Only select repositories → ${esc(slug.split("/")[1] || "dfd")}</b>. Permissions → Repository permissions → <b>Contents: Read and write</b>. Copy the token. You'll paste it on the first sync and it stays in this browser only.</li>
       <li><b>Add the bookmark.</b> On a computer, drag this button to your bookmarks bar: <a class="btn" href="${esc(code)}" onclick="alert('Drag this to your bookmarks bar instead of clicking it.');return false">⚡ Sync to Fantasy Edge</a> <span class="chip">bookmark ${esc(bmVer)}</span><br>
