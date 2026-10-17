@@ -6,6 +6,7 @@
    headers. Every attempt is recorded and shown in the site tab if all of them fail. */
 (async () => {
   const SITE = "__SITE__";
+  const V = "v4";
   const q = new URLSearchParams(location.search);
   const league = q.get("leagueId");
   if (!/(^|\.)espn\.com$/.test(location.hostname) || !league) {
@@ -57,7 +58,7 @@
     if (base) break;
   }
   if (!base) {
-    deliver({ type: "espn-league-error", message: "ESPN didn't let the bookmark read your league.",
+    deliver({ type: "espn-league-error", message: `ESPN didn't let the bookmark (${V}) read your league.`,
       details: log.concat(["ESPN page used: " + (used.slice(0, 6).map((u) => u.split("?")[0]).join(" , ") || "(none found)"),
         "app version: " + ver]) });
     return;
@@ -70,7 +71,24 @@
     return r.json();
   };
   try {
-    const main = await get("league", ["mSettings", "mTeam", "mRoster", "mMatchup", "mStatus"]);
+    let main;
+    try {
+      main = await get("league", ["mSettings", "mTeam", "mRoster", "mMatchup", "mStatus"]);
+    } catch (e) {
+      /* Some setups refuse multi-view requests: fetch each view alone and merge teams by id. */
+      log.push("combined views: " + e.message);
+      main = {};
+      for (const v of ["mStatus", "mSettings", "mTeam", "mRoster", "mMatchup"]) {
+        const part = await get(v, [v]);
+        for (const [k, val] of Object.entries(part)) {
+          if (k === "teams" && Array.isArray(main.teams)) {
+            val.forEach((t) => { const m = main.teams.find((x) => x.id === t.id); m ? Object.assign(m, t) : main.teams.push(t); });
+          } else {
+            main[k] = val;
+          }
+        }
+      }
+    }
     const week = main.scoringPeriodId || 1;
     const roster = await get("rosters", ["mRoster"], "&scoringPeriodId=" + week);
     /* Free agents are a bonus: without them the site treats every unrostered player as available. */
@@ -81,9 +99,9 @@
       })).players || [];
     } catch (e) { /* keep going */ }
     const swid = (document.cookie.match(/SWID=([^;]+)/) || [])[1] || null;
-    const payload = { v: 1, synced: new Date().toISOString(), league, season, swid, main, roster, players };
+    const payload = { v: 1, bookmark: V, synced: new Date().toISOString(), league, season, swid, main, roster, players };
     deliver({ type: "espn-league", payload });
   } catch (err) {
-    deliver({ type: "espn-league-error", message: "Couldn't read your league from ESPN (" + err.message + ").", details: log });
+    deliver({ type: "espn-league-error", message: `Couldn't read your league from ESPN (${err.message}). Bookmark ${V}.`, details: log });
   }
 })();

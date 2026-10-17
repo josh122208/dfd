@@ -631,7 +631,8 @@ function syncPage() {
 }
 async function renderConnect(el) {
   const m = D.meta;
-  const src = await (await fetch("bookmarklet.js")).text();
+  const src = await (await fetch("bookmarklet.js?t=" + Date.now(), { cache: "no-store" })).text();
+  const bmVer = (src.match(/const V = "([^"]+)"/) || [])[1] || "?";
   const site = location.origin + location.pathname;
   const code = "javascript:" + encodeURIComponent(src.replace(/\/\*[\s\S]*?\*\//g, "").replace("__SITE__", site).replace(/\n\s*/g, " "));
   const slug = repoSlug() || "josh122208/dfd";
@@ -640,7 +641,7 @@ async function renderConnect(el) {
     <div class="card small"><p style="margin-top:0"><b>Why the extra step?</b> ESPN blocks cloud servers (including GitHub's) from its fantasy API, so your browser, where you're already logged in, reads the league and saves an encrypted copy to your repo. ESPN cookies never leave your browser.</p>
     <h3>One-time setup</h3><ol>
       <li><b>Make a GitHub token.</b> On GitHub: Settings → Developer settings → Personal access tokens → <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Fine-grained tokens → Generate new token</a>. Repository access: <b>Only select repositories → ${esc(slug.split("/")[1] || "dfd")}</b>. Permissions → Repository permissions → <b>Contents: Read and write</b>. Copy the token. You'll paste it on the first sync and it stays in this browser only.</li>
-      <li><b>Add the bookmark.</b> On a computer, drag this button to your bookmarks bar: <a class="btn" href="${esc(code)}" onclick="alert('Drag this to your bookmarks bar instead of clicking it.');return false">⚡ Sync to Fantasy Edge</a><br>
+      <li><b>Add the bookmark.</b> On a computer, drag this button to your bookmarks bar: <a class="btn" href="${esc(code)}" onclick="alert('Drag this to your bookmarks bar instead of clicking it.');return false">⚡ Sync to Fantasy Edge</a> <span class="chip">bookmark ${esc(bmVer)}</span><br>
         On a phone: bookmark any page, edit that bookmark, and replace its address with the code below.<br>
         <textarea readonly id="bm" style="width:100%;height:70px;margin-top:6px;font:12px var(--mono);background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:8px">${esc(code)}</textarea>
         <button class="btn ghost" id="bm-copy">Copy bookmark code</button></li>
