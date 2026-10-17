@@ -83,9 +83,15 @@ def project(S):
     out = {}
     for pid, p in reg.players.items():
         pos, team = p.get("pos"), p.get("team")
-        if pos not in CV or not team:
+        if pos not in CV:
             continue
         u = usage.get(pid, {})
+        if not team:
+            # Unsigned/retired players can still sit on a fantasy roster: keep them, projected at zero.
+            if p.get("rostered"):
+                out[pid] = _row(p, u, {}, 0.0, 0.0, 0.0, 0.0, ["No NFL team right now"], None, None, None, True)
+                out[pid].update(bye=True)
+            continue
         src = {k: v for k, v in (("espn", p.get("espn_proj")), ("sleeper", S["sleeper_proj"].get(week, {}).get(p.get("sleeper_id") or "")))
                if v is not None}
         if not u and not src and not p.get("fp_week_rank") and not p.get("fc_value") and not p.get("rostered"):
