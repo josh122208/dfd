@@ -13,11 +13,10 @@ jobs:
           UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
           probe() { echo "== $1"; curl -sS -A "$UA" -o body -w "%{http_code}\n" "$1" ${2:+-H "$2"}; head -c 300 body; echo; }
           {
-          U="https://lm-api-reads.fantasy.espn.com/apps/fantasy/ffl/seasons/2026/segments/0/leagues/12345678?view=mSettings"
-          echo "== chrome"; timeout 60 google-chrome --headless=new --disable-gpu --no-sandbox --dump-dom "$U" 2>/dev/null | head -c 300; echo
-          echo "== ipv6"; curl -6 -sS -o body -w "%{http_code}\n" "$U" 2>&1; head -c 100 body; echo
-          echo "== scoreboard host"; curl -sS -o /dev/null -w "%{http_code}\n" "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-          echo "== core api"; curl -sS -o body -w "%{http_code}\n" "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/2026/types/2/weeks/6/events"; head -c 100 body; echo
+          for U in "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026/segments/0/leagues/1533985253?view=mStatus" "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026/segments/0/leaguedefaults/3?view=kona_player_info" "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026/players?view=players_wl"; do
+            echo "== $U"; curl -sS -o body -w "%{http_code}\n" -H 'x-fantasy-filter: {"players":{"limit":3}}' "$U"; head -c 200 body; echo
+          done
+          echo "== core"
           } > probe.txt 2>&1
           git init -q . && git config user.name diag-bot && git config user.email diag@users.noreply.github.com
           git checkout -q --orphan diag-out && git add probe.txt && git commit -qm probe
