@@ -261,6 +261,25 @@ def main():
             finder = trades.TradeFinder(S, P, strength, teams, me, prof)
             data["trades"] = finder.run([s["pid"] for s in sells])
             data["proj_buys"] = trades.projection_buys(finder, owner_of, week)
+            # Buy/Sell board: every buy-low (usage-based and projection-based) and sell-high, with trades at
+            # perceived prices; plus overpriced players on other rosters to avoid.
+            board_buys = list({b["pid"]: b for b in buys[:15]}.values())
+            seen_b = {b["pid"] for b in board_buys}
+            for x in data["proj_buys"]["ros"]:
+                if x["pid"] not in seen_b:
+                    board_buys.append({"pid": x["pid"], "why": x["why"]})
+                    seen_b.add(x["pid"])
+            data["board"] = trades.buy_sell_board(finder, owner_of, board_buys[:18], sells[:10])
+            others = [p for p, tid in owner_of.items() if tid != me]
+            data["board"]["avoid"] = trades.sell_high(P, others)[:15]
+            for side in ("buy", "sell"):
+                for x in data["board"][side]:
+                    lists.add(x["pid"])
+                    for e in x["offers"]:
+                        lists.update(e["give"] + e["get"] + e["my_drops"] + e["their_drops"])
+                        for st in e.get("ladder", []):
+                            lists.update(st["give"] + st["get"])
+            lists.update(x["pid"] for x in data["board"]["avoid"])
             for kind in ("ros", "next"):
                 for x in data["proj_buys"][kind]:
                     lists.update([x["pid"]] + ((x.get("offer") or {}).get("give") or []))
@@ -399,7 +418,7 @@ def _attach_espn(p, e, keep=False):
 
 PUBLIC = ("pid", "name", "pos", "team", "age", "headshot", "opp", "home", "implied", "spread", "proj", "floor", "ceil",
           "sd", "sources", "notes", "injury", "injury_detail", "injury_notes", "locked", "actual", "kickoff", "weather",
-          "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "value", "value_sources",
+          "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "value", "value_sources", "perceived",
           "fc_value", "fp_value",
           "fc_trend30", "model_value", "edge", "fp_ros_overall", "fp_ros_pos_rank", "fp_week_rank", "pct_owned",
           "pct_change", "season_pts", "pts_rank", "ros_rank", "week_rank", "on_team", "slot", "usage", "depth",

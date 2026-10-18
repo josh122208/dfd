@@ -69,7 +69,7 @@ function start(data) {
   };
   document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => show(b.dataset.v)));
   banners();
-  const views = { week: renderWeek, trades: renderTrades, matchups: renderMatchups, waivers: renderWaivers, analyzer: renderAnalyzer,
+  const views = { week: renderWeek, trades: renderTrades, board: renderBoard, matchups: renderMatchups, waivers: renderWaivers, analyzer: renderAnalyzer,
     playoffs: renderPlayoffs, league: renderLeague, players: renderPlayers, playbook: renderPlaybook, connect: renderConnect };
   for (const [k, fn] of Object.entries(views)) {
     const fail = (e) => { $("#v-" + k).innerHTML = `<div class="banner bad">This tab failed to render: ${esc(e.message)}</div>`; console.error(e); };
@@ -302,7 +302,7 @@ function tradeCard(e) {
     <div class="stats">
       <div><b style="color:var(--good)">${sign(e.my_gain)}</b>your pts/wk</div>
       <div><b>${sign(e.their_gain)}</b>their pts/wk</div>
-      <div><b>${pct(e.fair)}</b>value to them</div>
+      ${e.fair_perceived != null ? `<div><b>${pct(e.fair_perceived)}</b>fair in their eyes</div><div><b>${e.true_edge > 0 ? "+" : ""}${f0(e.true_edge)}</b>real value for you</div>` : `<div><b>${pct(e.fair)}</b>value to them</div>`}
       <div><b>${pct(e.p_accept)}</b>est. accept</div>
     </div>`;
   if (e.my_drops.length || e.their_drops.length) {
@@ -337,6 +337,33 @@ function marketTables() {
     </table></div></div>`;
   return t("Buy: model likes more than the market", under, "Usage, schedule and projections say these players are worth more than their trade price.")
     + t("Sell: market likes more than the model", over, "Their trade price is running ahead of their projected production.");
+}
+
+/* ---------- Buy/Sell board ---------- */
+function renderBoard(el) {
+  const B = D.board;
+  if (!B) { el.innerHTML = `<div class="empty">The Buy/Sell board needs your ESPN league.</div>`; return; }
+  const names = (ps) => ps.map((p) => esc(P[p]?.name || p)).join(" + ");
+  const offerHtml = (e) => `<details class="offer"><summary><b>Give ${names(e.give)} → get ${names(e.get)}</b>
+      <span class="pmeta"> · ${pct(e.fair_perceived)} fair in their eyes · ${sign(e.my_gain)} pts/wk for you · ${pct(e.p_accept)} accept${e.true_edge ? ` · ${e.true_edge > 0 ? "+" : ""}${f0(e.true_edge)} real value` : ""}</span></summary>${tradeCard(e)}</details>`;
+  const block = (x, side) => {
+    const r = P[x.pid] || {};
+    const gap = side === "buy" ? (x.value - x.perceived) : (x.perceived - x.value);
+    return `<div class="card"><div class="row"><div>${pn(x.pid)}${side === "buy" ? `<div class="pmeta">${esc(ownerName(x.team))}</div>` : ""}</div><span class="spacer"></span>
+      <div class="stats small"><div><b>${f0(x.perceived)}</b>perceived price</div><div><b>${f0(x.value)}</b>trade value</div><div><b>${f0(x.model)}</b>our model</div></div></div>
+      <ul class="notes" style="color:var(--text)">${(x.why || []).slice(0, 3).map((w) => `<li>${esc(w)}</li>`).join("")}</ul>
+      ${gap > 0 ? `<p class="small muted" style="margin:4px 0">${side === "buy" ? `Managers see him as worth about ${f0(gap)} less than he is.` : `Managers see him as worth about ${f0(gap)} more than he is.`}</p>` : ""}
+      ${x.offers.length ? x.offers.map(offerHtml).join("") : `<p class="small muted" style="margin:6px 0 0">No package at his perceived price helps your lineup right now. Try the Offer Analyzer.</p>`}</div>`;
+  };
+  el.innerHTML = `<h2>Buy lows</h2><p class="muted small">Players on other teams worth more than people think, based on usage, projections and schedule. Each comes with offers priced at his <b>perceived price</b> (what a typical manager thinks he's worth, half trade value and half where his points per game rank). That way you pay the discount, and the offer still looks fair to the other manager. Tap an offer for the full pitch.</p>
+    ${B.buy.map((x) => block(x, "buy")).join("") || '<div class="card empty">No buy-lows right now.</div>'}
+    <h2>Sell highs (your roster)</h2><p class="muted small">Your players whose perceived price is above what they're likely to produce. Offers collect that price and bring back more real value.</p>
+    ${B.sell.map((x) => block(x, "sell")).join("") || '<div class="card empty">Nobody on your roster is clearly overpriced right now.</div>'}
+    <h2>Overpriced around the league</h2><p class="muted small">Players on other teams the numbers say to avoid buying at their current price.</p>
+    <div class="card"><div class="table-wrap"><table><tr><th>Player</th><th>Manager</th><th class="num">Value</th><th class="num hide-sm">Model</th><th>Why</th></tr>
+    ${(B.avoid || []).map((x) => { const r = P[x.pid] || {}; return `<tr><td>${pn(x.pid)}</td><td class="small">${esc(ownerName(r.on_team))}</td><td class="num">${f0(r.value)}</td><td class="num hide-sm">${f0(r.model_value)}</td><td class="small">${x.why.slice(0, 2).map(esc).join("<br>")}</td></tr>`; }).join("")}
+    </table></div></div>`;
+  bindCopy(el);
 }
 
 /* ---------- Matchup trades ---------- */

@@ -536,3 +536,95 @@ def projection_buys(finder, owner_of, week, limit=12):
         out[kind].sort(key=lambda x: -(x["gain"] * (1.0 if x["offer"] else 0.6) + 0.05 * x["gap"]))
         out[kind] = out[kind][:limit]
     return out
+
+
+def buy_sell_board(finder, owner_of, buys, sells, per_player=2):
+    """Trades for every buy-low and sell-high, priced at perceived value (what a typical manager thinks).
+
+    Buy-lows: pay his perceived price, which is below his real value. Sell-highs: collect his perceived price,
+    which is above it. Packages must still help your lineup and look fair to the other manager by perceived
+    value, which is how they'll judge the offer."""
+    P, me = finder.P, finder.me
+    my_pids = [p for p in finder.teams[me]["pids"] if p in P and P[p]["pos"] in POS_GROUPS]
+
+    def pv(p):
+        return P[p].get("perceived") or P[p].get("value") or 0
+
+    def tv(p):
+        return P[p].get("value") or 0
+
+    def finish(ev, give, get):
+        """Re-score acceptance by perceived fairness (their lens) and attach a pitch."""
+        th_drops_pv = sum(pv(p) for p in ev["their_drops"])
+        fair_p = (sum(pv(p) for p in give) - th_drops_pv) / max(sum(pv(p) for p in get), 1)
+        p0 = min(max(ev["p_accept"], 1e-4), 1 - 1e-4)
+        z = math.log(p0 / (1 - p0)) + 4 * (fair_p - ev["fair"])
+        ev["p_accept"] = round(1 / (1 + math.exp(-z)), 3)
+        ev["fair_perceived"] = round(fair_p, 3)
+        ev["true_edge"] = round(sum(tv(p) for p in get) - sum(tv(p) for p in give))
+        return ev
+
+    def offers_for(tid, give_opts, get_opts):
+        res = []
+        for give in give_opts:
+            for get in get_opts:
+                gp, tp = sum(pv(p) for p in give), sum(pv(p) for p in get)
+                if tp <= 0 or not 0.85 <= gp / tp <= 1.25:
+                    continue
+                ev = finish(finder.evaluate(tid, give, get), give, get)
+                if 0.95 <= ev["fair_perceived"] <= 1.12 and ev["my_gain"] > 0 and ev["their_gain"] >= -1.5 \
+                        and ev["p_accept"] >= 0.3:
+                    res.append(ev)
+        res.sort(key=lambda e: -(e["my_gain"] + e["true_edge"] / 1500) * e["p_accept"])
+        picked, used = [], set()
+        for e in res:
+            k = frozenset(e["give"]) | frozenset(e["get"])
+            if k in used:
+                continue
+            used.add(k)
+            picked.append(e)
+            if len(picked) >= per_player:
+                break
+        return picked
+
+    board = {"buy": [], "sell": []}
+    singles = [(p,) for p in my_pids]
+    pairs = [c for c in itertools.combinations(sorted(my_pids, key=pv, reverse=True)[:9], 2)]
+    for b in buys:
+        pid, tid = b["pid"], owner_of.get(b["pid"])
+        if tid is None or tid == me or tid not in finder.teams:
+            continue
+        extra = [p for p in finder.teams[tid]["pids"] if p in P and P[p]["pos"] in POS_GROUPS and p != pid]
+        extra = sorted(extra, key=pv)[:6]
+        gets = [(pid,)] + [(pid, x) for x in extra if pv(x) < 0.5 * pv(pid)]
+        offers = offers_for(tid, singles + pairs, gets)
+        for e in offers:
+            e["ladder"] = []  # already priced at perceived value; the consensus-based ladder would confuse
+            e["pitch"] = pitch(e, P, finder.prof, finder.teams, me, finder.S)
+        board["buy"].append({"pid": pid, "team": tid, "why": b["why"], "perceived": pv(pid), "value": tv(pid),
+                             "model": P[pid].get("model_value"), "offers": offers})
+    for sl in sells:
+        pid = sl["pid"]
+        cands = []
+        for tid, t in finder.teams.items():
+            if tid == me:
+                continue
+            theirs = [p for p in t["pids"] if p in P and P[p]["pos"] in POS_GROUPS]
+            # Targets whose perceived price fits what they'd think mine is worth.
+            ones = [(p,) for p in theirs if 0.8 * pv(pid) <= pv(p) <= 1.15 * pv(pid)]
+            twos = [c for c in itertools.combinations(sorted(theirs, key=pv, reverse=True)[:8], 2)
+                    if 0.8 * pv(pid) <= pv(c[0]) + pv(c[1]) <= 1.15 * pv(pid)]
+            for e in offers_for(tid, [(pid,)], ones + twos):
+                if e["true_edge"] > 0:  # selling high means getting more real value back
+                    cands.append(e)
+        cands.sort(key=lambda e: -(e["my_gain"] + e["true_edge"] / 1500) * e["p_accept"])
+        offers = cands[:per_player]
+        for e in offers:
+            e["ladder"] = []
+            e["pitch"] = pitch(e, P, finder.prof, finder.teams, me, finder.S)
+        board["sell"].append({"pid": pid, "why": sl["why"], "perceived": pv(pid), "value": tv(pid),
+                              "model": P[pid].get("model_value"), "offers": offers})
+    # Biggest perception gaps first: the cheapest buys and the most inflated sells.
+    board["buy"].sort(key=lambda x: (not x["offers"], -(x["value"] - x["perceived"])))
+    board["sell"].sort(key=lambda x: (not x["offers"], -(x["perceived"] - x["value"])))
+    return board
