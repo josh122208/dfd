@@ -11,7 +11,7 @@ def waivers(players, free_ids, my_pids, strength, week, trending, faab_budget, f
     base_week = strength.weekly(my_pids)
     i_now = strength.idx.get(week)
     droppable = sorted([p for p in my_pids if p in players], key=lambda p: (players[p].get("vorp", 0),
-                                                                            players[p].get("fc_value", 0)))
+                                                                            players[p].get("value", 0)))
     # Never suggest dropping your only K or DST for a skill player.
     def drop_for(pid):
         pos = players[pid]["pos"]

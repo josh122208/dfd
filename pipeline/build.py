@@ -97,7 +97,7 @@ def main():
     for sid, s in sp.items():
         if s["pos"] == "DST" and s.get("team"):
             reg.add(f"DST_{s['team']}", sleeper_id=sid)
-        elif s.get("gsis_id") in reg.players:
+        elif s.get("gsis_id") in reg.players and pl._same_person(s.get("name"), reg.players[s["gsis_id"]].get("name")):
             reg.add(s["gsis_id"], sleeper_id=sid)
     proj_key = {0.5: "pts_half_ppr", 1.0: "pts_ppr", 0.0: "pts_std"}.get(ppr, "pts_half_ppr")
     sleeper_proj = market.sleeper_projections(cfg.season, ros_weeks) if sp else {}
@@ -197,7 +197,7 @@ def main():
     sched_byes = {(team, w) for team, w in ((tm, byes[tm]) for tm in byes) if w}
     for pid, r in P.items():
         p = reg.players[pid]
-        for k in ("fc_value", "fc_trend30", "fc_rank", "fc_estimated", "fp_ros_overall", "fp_ros_pos_rank", "pct_owned",
+        for k in ("fc_value", "fc_trend30", "fc_rank", "fp_ros_overall", "fp_ros_pos_rank", "pct_owned",
                   "pct_change", "pct_started", "sleeper_id", "espn_id", "exp"):
             if p.get(k) is not None:
                 r[k] = p[k]
@@ -290,7 +290,7 @@ def main():
 
     # Publish everyone fantasy-relevant, plus anyone referenced above.
     keep = {pid for pid, r in P.items() if pid in lists or r.get("on_team") is not None or (r.get("vorp") or 0) > 0
-            or (r.get("proj") or 0) >= 4 or (r.get("fc_value") or 0) >= 300}
+            or (r.get("proj") or 0) >= 4 or (r.get("value") or 0) >= 300}
     data["players"] = {pid: _public(P[pid]) for pid in keep}
     data["teams"] = [{"id": tm["id"], "name": tm["name"], "owner": tm.get("owner"), "abbrev": tm.get("abbrev"),
                       "record": f"{tm['wins']}-{tm['losses']}" + (f"-{tm['ties']}" if tm["ties"] else ""),
@@ -393,7 +393,8 @@ def _attach_espn(p, e, keep=False):
 
 PUBLIC = ("pid", "name", "pos", "team", "age", "headshot", "opp", "home", "implied", "spread", "proj", "floor", "ceil",
           "sd", "sources", "notes", "injury", "injury_detail", "injury_notes", "locked", "actual", "kickoff", "weather",
-          "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "fc_value", "fc_estimated",
+          "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "value", "value_sources",
+          "fc_value", "fp_value",
           "fc_trend30", "model_value", "edge", "fp_ros_overall", "fp_ros_pos_rank", "fp_week_rank", "pct_owned",
           "pct_change", "season_pts", "pts_rank", "ros_rank", "week_rank", "on_team", "slot", "usage", "depth",
           "inj_risk", "handcuff", "news")

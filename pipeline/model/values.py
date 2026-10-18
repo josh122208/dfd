@@ -44,36 +44,52 @@ def compute(players, S):
             tot += max(v - rp, 0) * (PLAYOFF_WEIGHT if w in playoff else 1.0)
         r["vorp"] = round(tot, 1)
 
-    # Fill market value where FantasyCalc has no number, from FantasyPros ROS rank (log-log fit).
-    have = [(r["fp_ros_overall"], r["fc_value"]) for r in players.values()
-            if r.get("fc_value") and r.get("fp_ros_overall")]
-    fit = None
-    if len(have) >= 20:
-        x = np.log([a for a, _ in have])
-        y = np.log([b for _, b in have])
-        fit = np.polyfit(x, y, 1)
-    for r in players.values():
-        if not r.get("fc_value") and r.get("fp_ros_overall"):
-            if fit is not None:
-                r["fc_value"] = float(np.exp(np.polyval(fit, np.log(r["fp_ros_overall"]))))
-            else:
-                # FantasyCalc unreachable: a typical redraft value curve on FantasyPros' ROS rank.
-                r["fc_value"] = 10000 * float(np.exp(-(r["fp_ros_overall"] - 1) / 90))
-            r["fc_estimated"] = True
+    # Trade value = consensus of three views, all on FantasyCalc's scale:
+    #   market  (FantasyCalc: what real managers trade players for)          45%
+    #   experts (FantasyPros rest-of-season rank, mapped onto that scale)    35%
+    #   model   (our rest-of-season value over replacement, same mapping)    20%
+    # A single source can be stale or quirky (and FantasyCalc only covers ~200 players); the blend is steadier.
+    market_all = sorted([r["fc_value"] for r in players.values() if r.get("fc_value")], reverse=True)
+    if len(market_all) < 50:
+        # FantasyCalc unreachable: a typical redraft value curve stands in for the market's shape.
+        market_all = [10000 * float(np.exp(-i / 90)) for i in range(600)]
 
-    # Put our model on the market's scale, position by position: the Nth-best RB by our projections gets the
-    # Nth-highest RB market value. Keeps positional pricing (cheap QBs in 1-QB leagues, etc.) intact.
+    def at_rank(dist, rank):
+        """Value at a (fractional) 1-based rank in a descending list, extended with a gentle tail."""
+        i = max(rank - 1, 0)
+        if i < len(dist) - 1:
+            lo = int(i)
+            return dist[lo] + (dist[lo + 1] - dist[lo]) * (i - lo)
+        return dist[-1] * float(np.exp(-(i - len(dist) + 1) / 60))
+
+    by_pos_market = {}
+    for r in players.values():
+        if r.get("fc_value"):
+            by_pos_market.setdefault(r["pos"], []).append(r["fc_value"])
+    for v in by_pos_market.values():
+        v.sort(reverse=True)
+    for r in players.values():
+        if r.get("fp_ros_overall"):
+            r["fp_value"] = round(at_rank(market_all, r["fp_ros_overall"]))
+        elif r.get("fp_ros_pos_rank") and len(by_pos_market.get(r["pos"], [])) >= 10:
+            r["fp_value"] = round(at_rank(by_pos_market[r["pos"]], r["fp_ros_pos_rank"]))
+    # Model on the market scale, position by position: the Nth-best RB by our projections gets the
+    # Nth-highest RB value (keeps positional pricing such as cheap QBs in 1-QB leagues).
     for pos in ("QB", "RB", "WR", "TE", "K", "DST"):
         grp = [r for r in players.values() if r["pos"] == pos]
-        market = sorted([r["fc_value"] for r in grp if r.get("fc_value")], reverse=True)
+        dist = by_pos_market.get(pos) or sorted([r["fp_value"] for r in grp if r.get("fp_value")], reverse=True)
         ranked = sorted(grp, key=lambda r: (r.get("vorp", 0), r.get("ros_ppg") or 0), reverse=True)
         for i, r in enumerate(ranked):
-            r["model_value"] = round(market[i], 0) if i < len(market) and (r.get("ros_ppg") or 0) > 0 else 0
+            r["model_value"] = round(at_rank(dist, i + 1)) if dist and (r.get("ros_ppg") or 0) > 0 else 0
     for r in players.values():
-        if not r.get("fc_value"):
-            r["fc_value"] = r["model_value"] * 0.9 if r["model_value"] else 0
-        r["fc_value"] = round(float(r["fc_value"]), 0)
-        r["edge"] = r["model_value"] - r["fc_value"]
+        parts = [(0.45, r.get("fc_value")), (0.35, r.get("fp_value")), (0.20, r.get("model_value"))]
+        parts = [(w, v) for w, v in parts if v]
+        if not parts:
+            r["value"] = 0
+        else:
+            r["value"] = round(sum(w * v for w, v in parts) / sum(w for w, _ in parts))
+        r["value_sources"] = {k: r.get(k) for k in ("fc_value", "fp_value", "model_value") if r.get(k)}
+        r["edge"] = (r.get("model_value") or 0) - r["value"]
 
     # Box-score perception: where he ranks at his position in total points (what most managers look at).
     for pos in ("QB", "RB", "WR", "TE", "K", "DST"):

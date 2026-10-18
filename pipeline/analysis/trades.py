@@ -15,7 +15,7 @@ def sell_high(players, mine):
     out = []
     for pid in mine:
         r = players.get(pid)
-        if not r or r["pos"] not in POS_GROUPS or (r.get("fc_value") or 0) < 1500:
+        if not r or r["pos"] not in POS_GROUPS or (r.get("value") or 0) < 1500:
             continue
         u = r.get("usage") or {}
         score, why = 0.0, []
@@ -25,10 +25,10 @@ def sell_high(players, mine):
         if u.get("td") is not None and u.get("td_exp") is not None and u["td"] - u["td_exp"] >= 1.5:
             score += (u["td"] - u["td_exp"]) * 0.5
             why.append(f"{u['td']:.0f} TDs on {u['td_exp']:.1f} expected")
-        mkt, mdl = r.get("fc_value") or 0, r.get("model_value") or 0
+        mkt, mdl = r.get("value") or 0, r.get("model_value") or 0
         if mkt > mdl * 1.1:
             score += (mkt - mdl) / max(mkt, 1) * 3
-            why.append(f"Market values him at {mkt:,.0f}, our rest-of-season model at {mdl:,.0f}")
+            why.append(f"Trade value {mkt:,.0f}, but our rest-of-season model says {mdl:,.0f}")
         if u.get("last3_ppg") and u.get("ppg") and u["last3_ppg"] > u["ppg"] * 1.25 and u["games"] >= 4:
             score += 0.5
             why.append(f"Hot streak ({u['last3_ppg']:.1f}/game last 3) makes his price peak now")
@@ -66,10 +66,10 @@ def buy_low(players, owner_of, me):
         if u.get("td") is not None and u.get("td_exp") is not None and u["td_exp"] - u["td"] >= 1.2:
             score += (u["td_exp"] - u["td"]) * 0.5
             why.append(f"Only {u['td']:.0f} TDs on {u['td_exp']:.1f} expected")
-        mkt, mdl = r.get("fc_value") or 0, r.get("model_value") or 0
+        mkt, mdl = r.get("value") or 0, r.get("model_value") or 0
         if mdl > mkt * 1.1:
             score += (mdl - mkt) / max(mdl, 1) * 3
-            why.append(f"Our model values him at {mdl:,.0f}, the market at {mkt:,.0f}")
+            why.append(f"Our model values him at {mdl:,.0f}, his trade value is {mkt:,.0f}")
         if u.get("last_pts") is not None and u.get("ppg") and u["last_pts"] < 0.6 * u["ppg"] and u["games"] >= 3:
             score += 0.5
             why.append(f"Coming off a dud ({u['last_pts']:.1f} pts), so his manager is frustrated")
@@ -118,7 +118,7 @@ def team_profiles(teams, players, strength, me, slots, week, sched_byes):
             depth[pos] = len(vals)
         need = min(z, key=z.get)
         surplus = max(POS_GROUPS, key=lambda p: depth[p] - (int(slots.get(p, 0)) or 1) * 1.5 + z[p])
-        hurt = [r["pid"] for r in rows if r.get("injury") in ("O", "IR", "PUP", "SUSP") and (r.get("fc_value") or 0) > 2000]
+        hurt = [r["pid"] for r in rows if r.get("injury") in ("O", "IR", "PUP", "SUSP") and (r.get("value") or 0) > 2000]
         upcoming_byes = []
         for w in (week, week + 1, week + 2):
             n = sum(1 for r in rows if (r["team"], w) in sched_byes and (r.get("ros_ppg") or 0) >= 8)
@@ -146,7 +146,7 @@ class TradeFinder:
         self.nweeks = max(len(strength.weeks), 1)
 
     def _value(self, pid):
-        return self.P[pid].get("fc_value") or 0
+        return self.P[pid].get("value") or 0
 
     def _after(self, roster, give, get, size):
         """Roster after the swap; if it's over the limit, drop the least valuable non-starters."""

@@ -238,7 +238,7 @@ function renderRankings(el) {
 function sideHtml(title, pids) {
   return `<div class="side"><h4>${esc(title)}</h4>${pids.map((p) => {
     const r = P[p] || {};
-    return `<div class="p"><span>${pn(p)}</span><span class="mono small muted">${f0(r.fc_value)}</span></div>`;
+    return `<div class="p"><span>${pn(p)}</span><span class="mono small muted">${f0(r.value)}</span></div>`;
   }).join("")}</div>`;
 }
 function renderTrades(el) {
@@ -246,7 +246,7 @@ function renderTrades(el) {
   if (D.sell_high && D.sell_high.length) {
     h += `<h2>Sell-high candidates on your roster</h2><div class="card"><div class="table-wrap"><table>
       <tr><th>Player</th><th class="num">Market</th><th class="num hide-sm">Our model</th><th>Why sell</th></tr>
-      ${D.sell_high.map((s) => { const r = P[s.pid] || {}; return `<tr><td>${pn(s.pid)}</td><td class="num">${f0(r.fc_value)}</td><td class="num hide-sm">${f0(r.model_value)}</td><td class="small">${s.why.map(esc).join("<br>")}</td></tr>`; }).join("")}
+      ${D.sell_high.map((s) => { const r = P[s.pid] || {}; return `<tr><td>${pn(s.pid)}</td><td class="num">${f0(r.value)}</td><td class="num hide-sm">${f0(r.model_value)}</td><td class="small">${s.why.map(esc).join("<br>")}</td></tr>`; }).join("")}
       </table></div></div>`;
   }
   if (D.trades) {
@@ -257,7 +257,7 @@ function renderTrades(el) {
   if (D.buy_low && D.buy_low.length) {
     h += `<h2>Buy-low targets around the league</h2><div class="card"><div class="table-wrap"><table>
       <tr><th>Player</th><th>Manager</th><th class="num">Market</th><th>Why buy</th></tr>
-      ${D.buy_low.slice(0, 20).map((s) => { const r = P[s.pid] || {}; return `<tr><td>${pn(s.pid)}</td><td class="small">${esc(ownerName(s.team))}</td><td class="num">${f0(r.fc_value)}</td><td class="small">${s.why.slice(0, 3).map(esc).join("<br>")}</td></tr>`; }).join("")}
+      ${D.buy_low.slice(0, 20).map((s) => { const r = P[s.pid] || {}; return `<tr><td>${pn(s.pid)}</td><td class="small">${esc(ownerName(s.team))}</td><td class="num">${f0(r.value)}</td><td class="small">${s.why.slice(0, 3).map(esc).join("<br>")}</td></tr>`; }).join("")}
       </table></div></div>`;
   }
   if (D.meta.mode === "public") h += marketTables();
@@ -310,12 +310,12 @@ function tradeCard(e) {
   return h + `</div>`;
 }
 function marketTables() {
-  const rows = Object.values(P).filter((r) => ["QB", "RB", "WR", "TE"].includes(r.pos) && r.fc_value > 1500 && r.model_value);
-  const under = [...rows].sort((a, b) => b.edge / b.fc_value - a.edge / a.fc_value).slice(0, 15);
-  const over = [...rows].sort((a, b) => a.edge / a.fc_value - b.edge / b.fc_value).slice(0, 15);
+  const rows = Object.values(P).filter((r) => ["QB", "RB", "WR", "TE"].includes(r.pos) && r.value > 1500 && r.model_value);
+  const under = [...rows].sort((a, b) => b.edge / b.value - a.edge / a.value).slice(0, 15);
+  const over = [...rows].sort((a, b) => a.edge / a.value - b.edge / b.value).slice(0, 15);
   const t = (title, list, why) => `<h2>${title}</h2><p class="muted small">${why}</p><div class="card"><div class="table-wrap"><table>
     <tr><th>Player</th><th class="num">Market</th><th class="num">Model</th><th class="num hide-sm">Pts/g</th><th class="num hide-sm">Exp/g</th></tr>
-    ${list.map((r) => `<tr><td>${pn(r.pid)}</td><td class="num">${f0(r.fc_value)}</td><td class="num">${f0(r.model_value)}</td><td class="num hide-sm">${f1(r.usage?.ppg)}</td><td class="num hide-sm">${f1(r.usage?.exp_ppg)}</td></tr>`).join("")}
+    ${list.map((r) => `<tr><td>${pn(r.pid)}</td><td class="num">${f0(r.value)}</td><td class="num">${f0(r.model_value)}</td><td class="num hide-sm">${f1(r.usage?.ppg)}</td><td class="num hide-sm">${f1(r.usage?.exp_ppg)}</td></tr>`).join("")}
     </table></div></div>`;
   return t("Buy: model likes more than the market", under, "Usage, schedule and projections say these players are worth more than their trade price.")
     + t("Sell: market likes more than the model", over, "Their trade price is running ahead of their projected production.");
@@ -413,7 +413,7 @@ function afterTrade(roster, give, get) {
   const drops = [];
   while (out.length > roster.length) {
     const cands = out.filter((p) => !get.includes(p) && P[p] && !(["K", "DST"].includes(P[p].pos) && out.filter((x) => P[x]?.pos === P[p].pos).length <= 1));
-    cands.sort((a, b) => (P[a].vorp || 0) - (P[b].vorp || 0) || (P[a].fc_value || 0) - (P[b].fc_value || 0));
+    cands.sort((a, b) => (P[a].vorp || 0) - (P[b].vorp || 0) || (P[a].value || 0) - (P[b].value || 0));
     const w = cands[0];
     out.splice(out.indexOf(w), 1);
     drops.push(w);
@@ -424,7 +424,7 @@ function evalTrade(myRoster, theirRoster, give, get) {
   const n = Math.max(D.meta.ros_weeks.length, 1);
   const [mine, myDrops] = afterTrade(myRoster, give, get);
   const [theirs, thDrops] = afterTrade(theirRoster, get, give);
-  const val = (ps) => ps.reduce((a, p) => a + (P[p]?.fc_value || 0), 0);
+  const val = (ps) => ps.reduce((a, p) => a + (P[p]?.value || 0), 0);
   const myGain = (strengthTotal(mine) - strengthTotal(myRoster)) / n;
   const thGain = (strengthTotal(theirs) - strengthTotal(theirRoster)) / n;
   const fair = (val(give) - val(thDrops)) / Math.max(val(get), 1);
@@ -440,8 +440,8 @@ function renderAnalyzer(el) {
   let partner = +(store.get("partner") || others[0].id);
   if (!others.some((t) => t.id === partner)) partner = others[0].id;
   const give = new Set(), get = new Set();
-  const list = (pids, set, tag) => pids.filter((p) => P[p]).sort((a, b) => (P[b].fc_value || 0) - (P[a].fc_value || 0))
-    .map((p) => `<label class="pick"><input type="checkbox" data-${tag}="${esc(p)}" ${set.has(p) ? "checked" : ""}><span style="flex:1">${pn(p)}</span><span class="mono small muted">${f0(P[p].fc_value)}</span></label>`).join("");
+  const list = (pids, set, tag) => pids.filter((p) => P[p]).sort((a, b) => (P[b].value || 0) - (P[a].value || 0))
+    .map((p) => `<label class="pick"><input type="checkbox" data-${tag}="${esc(p)}" ${set.has(p) ? "checked" : ""}><span style="flex:1">${pn(p)}</span><span class="mono small muted">${f0(P[p].value)}</span></label>`).join("");
   const draw = () => {
     const th = D.teams.find((t) => t.id === partner);
     el.innerHTML = `<h2>Offer analyzer</h2><p class="muted small">Got an offer, or thinking about sending one? Tick what you'd give and get. Uses the same rest-of-season lineup math and trade values as the recommendations.</p>
@@ -531,7 +531,7 @@ function renderLeague(el) {
     const t = D.teams.find((x) => x.id === +tr.dataset.team);
     const p = prof[t.id];
     $("#roster", el).innerHTML = `<h2>${esc(p.owner)}'s roster</h2><div class="card"><div class="table-wrap"><table><tr><th>Player</th><th class="num">ROS pts/g</th><th class="num">Value</th></tr>
-      ${t.pids.filter((x) => P[x]).sort((a, b) => (P[b].fc_value || 0) - (P[a].fc_value || 0)).map((x) => `<tr><td>${pn(x)}</td><td class="num">${f1(P[x].ros_ppg)}</td><td class="num">${f0(P[x].fc_value)}</td></tr>`).join("")}</table></div></div>`;
+      ${t.pids.filter((x) => P[x]).sort((a, b) => (P[b].value || 0) - (P[a].value || 0)).map((x) => `<tr><td>${pn(x)}</td><td class="num">${f1(P[x].ros_ppg)}</td><td class="num">${f0(P[x].value)}</td></tr>`).join("")}</table></div></div>`;
     $("#roster", el).scrollIntoView({ behavior: "smooth" });
   }));
 }
@@ -539,13 +539,13 @@ function renderLeague(el) {
 /* ---------- Players ---------- */
 function renderPlayers(el) {
   let q = "", pos = "ALL", sortKey = "ros_ppg", dir = -1;
-  const cols = [["name", "Player"], ["proj", "Wk"], ["ros_ppg", "ROS/g"], ["fc_value", "Market"], ["model_value", "Model"], ["snap", "Snap%"], ["tgt", "Tgt%"], ["ppg", "Pts/g"], ["exp", "Exp/g"], ["risk", "Inj risk"], ["owner", "Team"]];
+  const cols = [["name", "Player"], ["proj", "Wk"], ["ros_ppg", "ROS/g"], ["value", "Value"], ["model_value", "Model"], ["snap", "Snap%"], ["tgt", "Tgt%"], ["ppg", "Pts/g"], ["exp", "Exp/g"], ["risk", "Inj risk"], ["owner", "Team"]];
   const val = (r, k) => ({ snap: r.usage?.snap, tgt: r.usage?.tgt_share, ppg: r.usage?.ppg, exp: r.usage?.exp_ppg, risk: r.inj_risk?.exp_missed_6wk, owner: r.on_team == null ? "" : ownerName(r.on_team) }[k] ?? r[k]);
   const draw = () => {
     const rows = Object.values(P).filter((r) => (pos === "ALL" || r.pos === pos) && (!q || r.name.toLowerCase().includes(q)))
       .sort((a, b) => { const x = val(a, sortKey), y = val(b, sortKey); if (typeof x === "string" || typeof y === "string") return dir * String(x ?? "").localeCompare(String(y ?? "")); return dir * ((x ?? -1e9) - (y ?? -1e9)); }).slice(0, 200);
     $("#ptable", el).innerHTML = `<tr>${cols.map(([k, l], i) => `<th class="sort ${i > 0 && k !== "owner" ? "num" : ""} ${["snap", "tgt", "exp", "model_value", "owner", "risk"].includes(k) ? "hide-sm" : ""}" data-k="${k}">${l}${k === sortKey ? (dir < 0 ? " ↓" : " ↑") : ""}</th>`).join("")}</tr>
-      ${rows.map((r) => `<tr class="click" data-pid="${esc(r.pid)}"><td>${pn(r.pid)}</td><td class="num">${f1(r.proj)}</td><td class="num">${f1(r.ros_ppg)}</td><td class="num">${f0(r.fc_value)}</td><td class="num hide-sm">${f0(r.model_value)}</td><td class="num hide-sm">${pct(r.usage?.snap)}</td><td class="num hide-sm">${pct(r.usage?.tgt_share)}</td><td class="num">${f1(r.usage?.ppg)}</td><td class="num hide-sm">${f1(r.usage?.exp_ppg)}</td><td class="num hide-sm">${r.inj_risk ? `<span class="chip ${r.inj_risk.level === "High" ? "bad" : r.inj_risk.level === "Medium" ? "warn" : ""}">${esc(r.inj_risk.level)}</span>` : "–"}</td><td class="small hide-sm">${r.on_team === ME ? '<span class="chip acc">you</span>' : r.on_team == null ? (D.meta.mode === "league" ? '<span class="chip good">FA</span>' : "") : esc(ownerName(r.on_team))}</td></tr>`).join("")}`;
+      ${rows.map((r) => `<tr class="click" data-pid="${esc(r.pid)}"><td>${pn(r.pid)}</td><td class="num">${f1(r.proj)}</td><td class="num">${f1(r.ros_ppg)}</td><td class="num">${f0(r.value)}</td><td class="num hide-sm">${f0(r.model_value)}</td><td class="num hide-sm">${pct(r.usage?.snap)}</td><td class="num hide-sm">${pct(r.usage?.tgt_share)}</td><td class="num">${f1(r.usage?.ppg)}</td><td class="num hide-sm">${f1(r.usage?.exp_ppg)}</td><td class="num hide-sm">${r.inj_risk ? `<span class="chip ${r.inj_risk.level === "High" ? "bad" : r.inj_risk.level === "Medium" ? "warn" : ""}">${esc(r.inj_risk.level)}</span>` : "–"}</td><td class="small hide-sm">${r.on_team === ME ? '<span class="chip acc">you</span>' : r.on_team == null ? (D.meta.mode === "league" ? '<span class="chip good">FA</span>' : "") : esc(ownerName(r.on_team))}</td></tr>`).join("")}`;
     el.querySelectorAll("th.sort").forEach((th) => (th.onclick = () => { const k = th.dataset.k; dir = k === sortKey ? -dir : (k === "name" || k === "owner" ? 1 : -1); sortKey = k; draw(); }));
   };
   el.innerHTML = `<h2>All players</h2><div class="row"><input type="search" id="q" placeholder="Search players" style="flex:1;min-width:160px">
@@ -564,7 +564,7 @@ function renderPlaybook(el) {
     <p><b>Weekly projection</b> is a weighted blend of Sleeper (30%), ESPN (25%), FantasyPros' expert consensus rank converted to points (20%), and our own usage model (25%). The usage model starts from recency-weighted expected fantasy points (from every target and carry's field position and depth, via nflverse/ffopportunity), blended with actual scoring and last season's rate, then adjusts for Vegas implied team total vs that team's norm, schedule-adjusted defense vs position, game script (spread), wind/rain/cold, and starting-QB changes. Injury designations from the official report, ESPN and Sleeper scale it down.</p>
     <p><b>Floor/ceiling</b> are the 10th and 90th percentiles from each player's weekly volatility.</p>
     <p><b>Rest of season</b> projects every remaining week to the end of your fantasy playoffs (byes zeroed, IR stints respected); playoff weeks count 1.3×.</p>
-    <p><b>Trade value</b> is FantasyCalc's redraft value (12-team, half PPR), built from real trades. <b>Model value</b> puts our rest-of-season value over replacement on the same scale, so "edge" shows who's mispriced.</p>
+    <p><b>Trade value</b> is a consensus on one scale: 45% FantasyCalc (what real managers trade players for, 12-team half PPR), 35% FantasyPros' rest-of-season expert ranking, and 20% our own rest-of-season projection model, reweighted when a source has no number. Each player's breakdown is in his details. <b>Model value</b> alone shows where our projections disagree with the consensus.</p>
     <p><b>Injury risk</b> estimates each player's chance of getting hurt each game from his position's base rate, games missed last season and this season, weeks on the injury report, a recent soft-tissue or repeat injury (hamstrings, groins and calves recur often), age and workload. Expected missed games are subtracted from every future week, so riskier players project, and trade, a bit lower.</p>
     <p><b>Matchup details</b> also adjust our usage model: injured teammates (their targets and carries go to whoever absorbed them when he missed games before), offensive line vs pass rush and run defense (sack and stuffed-run rates), blitz-heavy defenses vs how each QB handles the blitz, play-action, and stacked boxes vs how each RB runs against 8+ defenders (FTN charting). Each is capped at a few percent and shown in the player's notes.</p>
     <p><b>Coach talk</b> pulls the last three weeks of news on each player (RotoWire via ESPN) and pulls out what the coach said. Words like "more involved" or "limited" nudge the projection a few percent for the next two weeks. The quotes are shown so you can judge them yourself.</p>
@@ -597,8 +597,8 @@ function openPlayer(pid) {
       <div class="kv"><div>This week<b>${f1(r.locked && r.actual != null ? r.actual : r.proj)}</b>${r.locked && r.actual != null ? "final" : `${f1(r.floor)}–${f1(r.ceil)}`}</div>
         <div>Matchup<b>${esc(opp(r)) || "–"}</b>${r.implied ? `team implied ${f1(r.implied)}` : ""}</div>
         <div>ROS pts/game<b>${f1(r.ros_ppg)}</b>${r.ros_rank ? `${esc(r.pos)}${r.ros_rank}` : ""}</div>
-        <div>Market value<b>${f0(r.fc_value)}</b>${r.fc_estimated ? "estimated" : "FantasyCalc"}</div>
-        <div>Model value<b>${f0(r.model_value)}</b>${r.edge ? `edge ${sign(r.edge, 0)}` : ""}</div>
+        <div>Trade value<b>${f0(r.value)}</b>consensus</div>
+        <div>Value breakdown<b class="small">${r.value ? `FC ${f0(r.value)}` : "FC –"} · ${r.fp_value ? `FP ${f0(r.fp_value)}` : "FP –"}</b>model ${f0(r.model_value)}</div>
         <div>FantasyPros<b>${r.fp_ros_pos_rank ? esc(r.pos) + Math.round(r.fp_ros_pos_rank) : "–"}</b>ROS rank</div></div>
       ${srcs ? `<div class="small muted">Projection sources: ${srcs}</div>` : ""}
       ${(r.notes || []).length ? `<h3 style="margin-top:12px">Why</h3><ul class="notes" style="color:var(--text)">${r.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
