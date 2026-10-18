@@ -19,20 +19,10 @@ jobs:
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
         run: |
-          python -m pipeline.build --out out > all.log 2>&1; echo "exit $?" > tb.txt
+          curl -sfL "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/data/data.enc.json" -o prev.json || true
+          PREV_DATA=prev.json python -m pipeline.build --out out > all.log 2>&1; echo "exit $?" > tb.txt
+          ls -la prev.json >> tb.txt 2>&1
+          sed -n '/Traceback/,$p' all.log | tail -30 >> tb.txt
           grep -E "ERROR|espn league|player news|Traceback|Error|done in|source failed" all.log | sed -E 's/\{[0-9A-Fa-f-]{30,}\}/{SWID}/g' | cut -c1-220 | tail -25 >> tb.txt
-          python3 - >> tb.txt 2>&1 <<'PY'
-          import json, os, random
-          from pipeline import crypto
-          d = json.loads(crypto.decrypt(open("out/data.enc.json").read(), os.environ["SITE_PASSWORD"]))
-          P = d["players"]
-          withq = [r for r in P.values() if (r.get("news") or {}).get("quotes")]
-          print("players with quotes:", len(withq))
-          random.seed(1)
-          for r in random.sample(withq, min(14, len(withq))):
-              print("==", r["name"], r["team"])
-              for q in r["news"]["quotes"][:2]:
-                  print("   ", q["text"][:200])
-          PY
           git config user.name diag-bot && git config user.email diag@users.noreply.github.com
           git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f tb.txt && git commit -qm tb && git push -qf origin diag-out

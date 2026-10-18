@@ -94,6 +94,19 @@ def compute(players, S):
         r["value_sources"] = {k: r.get(k) for k in ("fc_value", "fp_value", "model_value") if r.get(k)}
         r["edge"] = (r.get("model_value") or 0) - r["value"]
 
+    # Perceived price: what a typical manager thinks he's worth. Half the market's view (FantasyCalc and
+    # FantasyPros, no model), half what his points-per-game rank at the position would fetch (box-score bias).
+    for pos in ("QB", "RB", "WR", "TE"):
+        grp = [r for r in players.values() if r["pos"] == pos]
+        dist = sorted([r["value"] for r in grp if r.get("value")], reverse=True)
+        scored = [r for r in grp if (r.get("usage") or {}).get("games", 0) >= 3]
+        scored.sort(key=lambda r: r["usage"]["ppg"], reverse=True)
+        box = {r["pid"]: at_rank(dist, i + 1) for i, r in enumerate(scored)} if dist else {}
+        for r in grp:
+            mk = [v for v in (r.get("fc_value"), r.get("fp_value")) if v]
+            market = sum(mk) / len(mk) if mk else r.get("value") or 0
+            r["perceived"] = round(0.5 * market + 0.5 * box[r["pid"]]) if r["pid"] in box else round(market)
+
     # Box-score perception: where he ranks at his position in total points (what most managers look at).
     for pos in ("QB", "RB", "WR", "TE", "K", "DST"):
         grp = [r for r in players.values() if r["pos"] == pos]

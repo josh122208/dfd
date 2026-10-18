@@ -57,7 +57,7 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
     # One quick probe first: if the news service is unreachable, skip instead of retrying hundreds of times.
     if not todo or safe(lambda: get_json(PLAYER_NEWS, params={"playerId": todo[0][1]["espn_id"], "limit": 1},
                                          max_age=max_age, retries=1), None, "news probe") is None:
-        return {}
+        return {}, []
 
     def fetch(item):
         pid, p = item
@@ -115,11 +115,13 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
         titled = re.search(r"\b(head coach|coach|coordinator|play-?caller|oc)\b", low)
         if not (own or titled):
             return False
+        if not own and re.search(r"\b(college|university|high school|nittany|alma mater|former coach)\b", low):
+            return False
         if re.search(r"coaching (tenure|career|staff history)|coach(es)?'s? (teams|system|scheme|offense)\b", low) and not own:
             return False
         return bool(speech.search(sentence))
 
-    seen_items, quotes, items = set(), {}, {}
+    seen_items, quotes, items, feed = set(), {}, {}, []
     for fetched_for, feed in feeds:
         team = players[fetched_for].get("team")
         for f in feed:
@@ -140,6 +142,12 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
             for pid in prev:
                 if pid != "?":
                     items.setdefault(pid, []).append({"date": date, "headline": head})
+            # Whole-story feed entry: credited to the players the headline names (or the first story sentence).
+            about = [p for p in prev if p != "?"] or [p for p in mentions(" ".join(_sentences(body)[:1]), team) if p != "?"]
+            if about and when >= dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7):
+                snippet = " ".join(_sentences(body)[:2])
+                feed.append({"published": when.isoformat(), "headline": head,
+                             "story": snippet[:420] + ("…" if len(snippet) > 420 else ""), "pids": about[:3]})
             for sent in _sentences(body):
                 named = mentions(sent, team)
                 # "He"/"his" only refers back to the player named in the sentence right before.
@@ -165,7 +173,8 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
                     "signal": round(signal, 2), "items": sorted(items.get(pid, []), key=lambda i: i["date"], reverse=True)[:4]}
     log.info("player news: %d items pooled; %d players with news, %d with coach quotes", len(seen_items), len(out),
              sum(1 for v in out.values() if v["quotes"]))
-    return out
+    feed.sort(key=lambda f: f["published"], reverse=True)
+    return out, feed[:200]
 
 
 def team_news(teams, coach_of, max_age=3 * 3600, days=10):
