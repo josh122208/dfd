@@ -226,7 +226,7 @@ class TradeFinder:
                 continue
             for give, get in self._combos(tid, my_c):
                 ev = self.evaluate(tid, give, get)
-                if ev["my_gain"] >= 0.4 and ev["fair"] >= 0.93 and ev["p_accept"] >= 0.3 and ev["their_gain"] >= -1.5:
+                if ev["my_gain"] >= 0.4 and 0.93 <= ev["fair"] <= 1.15 and ev["p_accept"] >= 0.3 and ev["their_gain"] >= -1.5:
                     results.append(ev)
         results.sort(key=lambda e: -e["score"])
         # Keep variety: no more than two offers per manager, and no player in more than three offers.
@@ -281,7 +281,7 @@ class TradeFinder:
             cands = []
             for give, get in self._combos(tid, my_c):
                 ev = self.evaluate(tid, give, get)
-                if ev["fair"] < 0.93 or ev["their_gain"] < -0.5 or ev["my_gain"] < -0.3 or ev["p_accept"] < 0.35:
+                if not 0.93 <= ev["fair"] <= 1.15 or ev["their_gain"] < -0.5 or ev["my_gain"] < -0.3 or ev["p_accept"] < 0.35:
                     continue
                 my_new, _ = self._after(me_t["pids"], give, get, len(me_t["pids"]))
                 th_new, _ = self._after(th_t["pids"], get, give, len(th_t["pids"]))
@@ -380,7 +380,7 @@ class TradeFinder:
                        and self.P[p]["pos"] in POS_GROUPS], key=self._value)
         for x in (adds if e["fair"] < 1.05 else []):
             ev = self.evaluate(tid, e["give"] + [x], e["get"])
-            if ev["my_gain"] > 0.2 and ev["fair"] > e["fair"] + 0.04:
+            if ev["my_gain"] > 0.2 and e["fair"] + 0.04 < ev["fair"] <= 1.2:
                 steps.append({"label": "Walk-away price", "give": ev["give"], "get": ev["get"], "fair": ev["fair"],
                               "my_gain": ev["my_gain"],
                               "note": "Add this only after they counter. Past this, the trade stops helping you."})

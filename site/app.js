@@ -460,7 +460,7 @@ function renderAnalyzer(el) {
     const g = [...give], r = [...get];
     const e = evalTrade(mine.pids, th.pids, g, r);
     let cls, word, advice;
-    if (e.myGain >= 0.5 && e.fair <= 1.2) { cls = "good"; word = "Accept / send it"; advice = "Improves your lineup and is priced fairly."; }
+    if (e.myGain >= 0.5 && e.fair <= 1.15) { cls = "good"; word = "Accept / send it"; advice = "Improves your lineup and is priced fairly."; }
     else if (e.myGain >= 0.5) { cls = "warn"; word = "Good for you, but you're overpaying"; advice = "Your lineup improves, but the market says you're giving more value than you get. Try asking for a little more first."; }
     else if (e.myGain > -0.3) { cls = "warn"; word = "Meh: counter"; advice = "Basically neutral for your lineup."; }
     else { cls = "bad"; word = "Decline"; advice = "This makes your lineup worse."; }
