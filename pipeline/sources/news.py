@@ -115,6 +115,8 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
         titled = re.search(r"\b(head coach|coach|coordinator|play-?caller|oc)\b", low)
         if not (own or titled):
             return False
+        if not own and re.search(r"\b(college|university|high school|nittany|alma mater|former coach)\b", low):
+            return False
         if re.search(r"coaching (tenure|career|staff history)|coach(es)?'s? (teams|system|scheme|offense)\b", low) and not own:
             return False
         return bool(speech.search(sentence))
