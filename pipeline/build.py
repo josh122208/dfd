@@ -181,7 +181,9 @@ def main():
             for pid, p in reg.players.items()
             if p.get("espn_id") and p.get("pos") in ("QB", "RB", "WR", "TE") and p.get("team")
             and (p.get("rostered") or (p.get("fc_value") or 0) >= 400 or (p.get("fp_ros_overall") or 999) <= 220)}
-    S["news"] = safe(lambda: news.player_news(want, ctx), {}, "player news")
+    others = [(p.get("name"), p.get("team")) for p in reg.players.values()
+              if p.get("pos") in ("QB", "RB", "WR", "TE", "K") and p.get("name")]
+    S["news"] = safe(lambda: news.player_news(want, ctx, others), {}, "player news")
     status["coach_news"] = f"{len(S['news'])} players" if S["news"] else "unavailable"
     team_news = safe(lambda: news.team_news(set(sched.team), ctx), {}, "team news")
     P = projections.project(S)
@@ -258,6 +260,10 @@ def main():
             data["buy_low"] = buys
             finder = trades.TradeFinder(S, P, strength, teams, me, prof)
             data["trades"] = finder.run([s["pid"] for s in sells])
+            data["proj_buys"] = trades.projection_buys(finder, owner_of, week)
+            for kind in ("ros", "next"):
+                for x in data["proj_buys"][kind]:
+                    lists.update([x["pid"]] + ((x.get("offer") or {}).get("give") or []))
             data["matchup_trades"] = finder.run_matchups((sim.get("me") or {}).get("games", []), data["trades"])
             for mt in data["matchup_trades"]:
                 for e in mt["trades"]:

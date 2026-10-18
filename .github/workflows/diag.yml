@@ -22,26 +22,17 @@ jobs:
           python -m pipeline.build --out out > all.log 2>&1; echo "exit $?" > tb.txt
           grep -E "ERROR|espn league|player news|Traceback|Error|done in|source failed" all.log | sed -E 's/\{[0-9A-Fa-f-]{30,}\}/{SWID}/g' | cut -c1-220 | tail -25 >> tb.txt
           python3 - >> tb.txt 2>&1 <<'PY'
-          import json, os
+          import json, os, random
           from pipeline import crypto
-          from pipeline.sources import market
           d = json.loads(crypto.decrypt(open("out/data.enc.json").read(), os.environ["SITE_PASSWORD"]))
           P = d["players"]
-          fc = market.fantasycalc(12, 0.5)
-          print("FC rows", len(fc), "value range", fc.fc_value.max(), fc.fc_value.min())
-          print(fc.sort_values("fc_value", ascending=False).head(15)[["fc_name","pos","fc_value","fc_rank"]].to_string())
-          print(fc.sort_values("fc_value").head(8)[["fc_name","pos","fc_value","fc_rank"]].to_string())
-          rows = sorted([r for r in P.values() if r["pos"] in ("QB","RB","WR","TE")], key=lambda r: -(r.get("value") or 0))
-          print("%-24s %-3s %7s %7s %7s %7s %6s %s" % ("name","pos","VALUE","fc","fp","model","fpOvr","team"))
-          def line(r):
-              return "%-24s %-3s %7.0f %7.0f %7.0f %7.0f %6s %s" % (r["name"][:24], r["pos"], r.get("value") or 0, r.get("fc_value") or 0, r.get("fp_value") or 0, r.get("model_value") or 0, r.get("fp_ros_overall") or "", "mine" if r.get("on_team")==d["meta"]["me"] else ("FA" if r.get("on_team") is None else ""))
-          for r in rows[:45]: print(line(r))
-          print("trades:", [(e["fair"], round(e["my_gain"], 2), e["give_value"], e["get_value"]) for e in d.get("trades", [])])
-          print("Quitoriano:", [line(r) for r in rows if "Quitoriano" in r["name"]])
-          print("--- my roster")
-          for r in rows:
-              if r.get("on_team") == d["meta"]["me"]: print(line(r))
-
+          withq = [r for r in P.values() if (r.get("news") or {}).get("quotes")]
+          print("players with quotes:", len(withq))
+          random.seed(1)
+          for r in random.sample(withq, min(14, len(withq))):
+              print("==", r["name"], r["team"])
+              for q in r["news"]["quotes"][:2]:
+                  print("   ", q["text"][:200])
           PY
           git config user.name diag-bot && git config user.email diag@users.noreply.github.com
           git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f tb.txt && git commit -qm tb && git push -qf origin diag-out

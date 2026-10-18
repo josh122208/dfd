@@ -9,7 +9,7 @@ import html
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from ..util import get_json, log, safe
+from ..util import get_json, log, norm_name, safe
 
 PLAYER_NEWS = "https://site.api.espn.com/apis/fantasy/v2/games/ffl/news/players"
 TEAM_NEWS = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
@@ -27,8 +27,6 @@ NEGATIVE = [
     "not ready", "setback", "day-to-day", "week-to-week", "doesn't expect", "won't play", "game-time decision",
     "frustrat", "struggl", "needs to be better", "ball security", "fumbl", "drop", "healthy scratch", "pull back",
 ]
-COACH_WORDS = re.compile(r"\b(coach|coordinator|play-?caller|head coach|OC|told reporters|said|says|according to)\b",
-                         re.I)
 
 
 def _clean(text):
@@ -47,64 +45,114 @@ def _score(text):
     return pos, neg
 
 
-def coach_lines(text, coach_names):
-    """Sentences that report something a coach said, preferring ones that name the coach."""
-    out = []
-    names = [n for n in coach_names if n]
-    for s in _sentences(text):
-        named = any(n.lower() in s.lower() for n in names)
-        if named or (COACH_WORDS.search(s) and re.search(r"coach|coordinator", s, re.I)):
-            out.append(s)
-    return out
+def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, workers=8):
+    """players: {pid: {espn_id, name, team}}. Returns {pid: {quotes, signal, items}} for the last `days` days.
 
-
-def player_news(players, coach_of, max_age=3 * 3600, days=21, workers=8):
-    """players: {pid: {espn_id, name, team}}. Returns {pid: {quotes, signal, items}} for the last `days` days."""
+    ESPN's feed for one player often carries items about teammates or opponents, so every item is pooled and
+    each coach sentence is credited to the player it actually names (full name, or a last name that's unique on
+    his team). A sentence that names nobody ("he said...") goes to the last player named in that story; sentences
+    about players we don't track are dropped rather than guessed."""
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    todo = [(pid, p) for pid, p in players.items() if p.get("espn_id")]
+    # One quick probe first: if the news service is unreachable, skip instead of retrying hundreds of times.
+    if not todo or safe(lambda: get_json(PLAYER_NEWS, params={"playerId": todo[0][1]["espn_id"], "limit": 1},
+                                         max_age=max_age, retries=1), None, "news probe") is None:
+        return {}
 
-    def one(item):
+    def fetch(item):
         pid, p = item
         d = safe(lambda: get_json(PLAYER_NEWS, params={"playerId": p["espn_id"], "limit": 8}, max_age=max_age),
                  None, f"news {p['name']}")
-        if not d:
-            return pid, None
-        coach = coach_of.get(p.get("team"), {})
-        names = [coach.get("coach"), (coach.get("coach") or "").split(" ")[-1]]
-        items, quotes, pos, neg = [], [], 0, 0
-        for f in d.get("feed", []) or []:
+        return pid, (d or {}).get("feed", []) or []
+
+    with ThreadPoolExecutor(workers) as ex:
+        feeds = list(ex.map(fetch, todo))
+
+    # Name index: tracked players by full name and by (team, last name); untracked names only as "someone else".
+    full, by_last = {}, {}
+    for pid, p in players.items():
+        n = norm_name(p.get("name"))
+        if not n:
+            continue
+        full[n] = pid
+        by_last.setdefault((p.get("team"), n.split(" ")[-1]), []).append(pid)
+    others = {norm_name(n) for n, _ in other_names} - set(full)
+    other_last = {(tm, norm_name(n).split(" ")[-1]) for n, tm in other_names if norm_name(n) not in full}
+    names = sorted([n for n in full | {o: None for o in others} if len(n) > 4], key=len, reverse=True)
+    name_re = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b") if names else None
+    coach_last = {(c.get("coach") or "").split(" ")[-1].lower() for c in coach_of.values() if c.get("coach")}
+
+    def mentions(sentence, team):
+        """Tracked pids named in a sentence; ["?"] if only an untracked player is named; [] if nobody."""
+        t = norm_name(sentence)
+        found, other = [], False
+        if name_re:
+            for m in name_re.finditer(t):
+                pid = full.get(m.group(1))
+                if pid and pid not in found:
+                    found.append(pid)
+                elif not pid:
+                    other = True
+        if not found:
+            words = set(t.split())
+            for (tm, last), pids in by_last.items():
+                if tm == team and last in words and len(pids) == 1 and len(last) > 3 and last not in coach_last:
+                    found.append(pids[0])
+            if not found and any((team, w) in other_last for w in words if len(w) > 3 and w not in coach_last):
+                other = True
+        return found or (["?"] if other else [])
+
+    def is_coach(sentence):
+        low = sentence.lower()
+        return bool(re.search(r"\bcoach|coordinator|play-?caller", low)) or any(
+            c and re.search(r"\b" + re.escape(c) + r"\b", low) for c in coach_last)
+
+    seen_items, quotes, items = set(), {}, {}
+    for fetched_for, feed in feeds:
+        team = players[fetched_for].get("team")
+        for f in feed:
+            key = f.get("id") or f.get("headline")
+            if key in seen_items:
+                continue
+            seen_items.add(key)
             try:
                 when = dt.datetime.fromisoformat(f.get("published", "").replace("Z", "+00:00"))
             except ValueError:
                 continue
             if when < cutoff:
                 continue
-            body = _clean(f.get("story") or f.get("description") or "")
+            date = when.date().isoformat()
             head = _clean(f.get("headline") or "")
-            items.append({"date": when.date().isoformat(), "headline": head})
-            for s in coach_lines(head + " " + body, names):
-                a, b = _score(s)
-                pos, neg = pos + a, neg + b
-                quotes.append({"date": when.date().isoformat(), "text": s[:280], "tone": (a > b) - (a < b)})
-        if not items:
-            return pid, None
-        # Net tone of the coach's recent words, damped: -1 (role shrinking/limited) .. +1 (role growing).
-        signal = 0.0 if pos + neg == 0 else max(-1.0, min(1.0, (pos - neg) / (pos + neg + 1)))
-        seen, uniq = set(), []
-        for q in quotes:
+            body = _clean(f.get("story") or f.get("description") or "")
+            subject = mentions(head, team)
+            for pid in subject:
+                if pid != "?":
+                    items.setdefault(pid, []).append({"date": date, "headline": head})
+            for sent in _sentences(body):
+                named = mentions(sent, team)
+                if named:
+                    subject = named
+                if not is_coach(sent):
+                    continue
+                a, b = _score(sent)
+                for pid in (named or subject):
+                    if pid == "?":
+                        continue
+                    quotes.setdefault(pid, []).append({"date": date, "text": sent[:280], "tone": (a > b) - (a < b),
+                                                       "pos": a, "neg": b})
+    out = {}
+    for pid in set(items) | set(quotes):
+        qs, seen, uniq = sorted(quotes.get(pid, []), key=lambda q: q["date"], reverse=True), set(), []
+        for q in qs:
             if q["text"] not in seen:
                 seen.add(q["text"])
                 uniq.append(q)
-        return pid, {"quotes": uniq[:4], "signal": round(signal, 2), "items": items[:4]}
-
-    todo = [(pid, p) for pid, p in players.items() if p.get("espn_id")]
-    # One quick probe first: if the news service is unreachable, skip instead of retrying hundreds of times.
-    if not todo or safe(lambda: get_json(PLAYER_NEWS, params={"playerId": todo[0][1]["espn_id"], "limit": 1},
-                                         max_age=max_age, retries=1), None, "news probe") is None:
-        return {}
-    with ThreadPoolExecutor(workers) as ex:
-        res = dict(ex.map(one, todo))
-    out = {k: v for k, v in res.items() if v}
-    log.info("player news: %d of %d players have recent items, %d with coach quotes", len(out), len(todo),
+        pos, neg = sum(q["pos"] for q in uniq), sum(q["neg"] for q in uniq)
+        # Net tone of the coach's recent words, damped: -1 (role shrinking/limited) .. +1 (role growing).
+        signal = 0.0 if pos + neg == 0 else max(-1.0, min(1.0, (pos - neg) / (pos + neg + 1)))
+        out[pid] = {"quotes": [{k: q[k] for k in ("date", "text", "tone")} for q in uniq[:4]],
+                    "signal": round(signal, 2), "items": sorted(items.get(pid, []), key=lambda i: i["date"], reverse=True)[:4]}
+    log.info("player news: %d items pooled; %d players with news, %d with coach quotes", len(seen_items), len(out),
              sum(1 for v in out.values() if v["quotes"]))
     return out
 
