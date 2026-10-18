@@ -1,0 +1,14 @@
+exit 0
+-rw-r--r-- 1 runner runner 271948 Oct 18 18:39 prev.json
+prev: 2026-10-18T18:38:45+00:00 | feed: 150 | deltas: 321
+ - 2026-10-18T18:28 | Alvin Kamara | Kamara (undisclosed) returned to Sunday's contest at the Giants.
+ - 2026-10-18T18:25 | Michael Penix Jr. | Live on FOX: Michael Penix Jr. links up with Jahan Dotson for a sweet Falcons TD
+ - 2026-10-18T18:24 | Rashod Bateman | Bateman sustained a shoulder injury during Sunday's game at Cleveland, Brian Wacker of The Baltimore Sun repor
+ - 2026-10-18T18:21 | C.J. Stroud | Why fantasy managers may want to consider C.J. Stroud in Week 7
+ - 2026-10-18T18:20 | Jeremiyah Love, DJ Moore | Fantasy football Week 6 inactives: Jeremiyah Love out, DJ Moore questionable
+ - 2026-10-18T18:05 | Drake Maye, Romeo Doubs | Live on CBS: Drake Maye has all day to find Romeo Doubs in the end zone
+up: []
+down: []
+2026-10-18 18:39:44,213 INFO espn league: 12 teams, 1052 players, week 6, me=5
+2026-10-18 18:39:55,331 INFO player news: 1308 items pooled; 206 players with news, 45 with coach quotes
+2026-10-18 18:39:57,778 INFO done in 17.6s: 321 players, mode=league, week=6
