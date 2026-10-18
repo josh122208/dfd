@@ -456,3 +456,83 @@ def manager_tendencies(tx, teams, reg, faab_budget=None):
         v["max_bid"] = max(v["bids"]) if v["bids"] else 0
         del v["bids"]
     return T
+
+
+def projection_buys(finder, owner_of, week, limit=12):
+    """Buy-lows by projection: players whose rest-of-season (or next-week) projection ranks well above their
+    trade-value rank at the position, plus the cheapest fair 1-for-1 offer from your roster for each."""
+    P, me, st = finder.P, finder.me, finder.st
+    my_pids = finder.teams[me]["pids"]
+    nxt = week + 1
+    nwi = st.idx.get(nxt)
+
+    def wk(r, w):
+        return next((v for x, v in r.get("ros", []) if x == w), 0.0)
+
+    pool = [r for r in P.values() if r["pos"] in POS_GROUPS and (r.get("value") or 0) > 300]
+    rank = {}
+    for pos in POS_GROUPS:
+        grp = [r for r in pool if r["pos"] == pos]
+        for key, f in (("val", lambda r: r.get("value") or 0), ("ros", lambda r: r.get("ros_ppg") or 0),
+                       ("next", lambda r: wk(r, nxt))):
+            for i, r in enumerate(sorted(grp, key=f, reverse=True), 1):
+                rank.setdefault(r["pid"], {})[key] = i
+    cap = {"QB": 14, "TE": 14, "RB": 36, "WR": 40}
+    base_total = st.total(my_pids, me)
+    base_week = st.weekly(my_pids)
+    n = max(len(st.weeks), 1)
+    my_side = sorted([p for p in my_pids if p in P and P[p]["pos"] in POS_GROUPS], key=lambda p: P[p].get("value") or 0)
+    out = {"ros": [], "next": [], "next_week": nxt}
+    for r in pool:
+        pid, tid = r["pid"], owner_of.get(r["pid"])
+        if tid is None or tid == me or tid not in finder.teams:
+            continue
+        rk = rank[pid]
+        for kind in ("ros", "next"):
+            if kind == "next" and nwi is None:
+                continue
+            proj_rank = rk[kind]
+            gap = rk["val"] - proj_rank
+            if proj_rank > cap[r["pos"]] or gap < (5 if r["pos"] in ("RB", "WR") else 3):
+                continue
+            # What he'd add to my lineup (after dropping my least useful player).
+            new = my_pids + [pid]
+            worst = min((p for p in my_pids if p in P), key=lambda p: (P[p].get("vorp", 0), P[p].get("value") or 0))
+            new = [p for p in new if p != worst]
+            gain_ros = (st.total(new, me) - base_total) / n
+            gain_next = float(st.weekly(new)[nwi] - base_week[nwi]) if nwi is not None else 0.0
+            if (gain_ros if kind == "ros" else gain_next) <= 0.2:
+                continue
+            # Cheapest fair 1-for-1 that still helps me.
+            offer = None
+            for g in my_side:
+                ev = finder.evaluate(tid, (g,), (pid,))
+                if 0.93 <= ev["fair"] <= 1.15 and ev["my_gain"] > 0 and ev["p_accept"] >= 0.3:
+                    if kind == "next":
+                        mine_after, _ = finder._after(my_pids, (g,), (pid,), len(my_pids))
+                        ev["next_gain"] = round(float(st.weekly(mine_after)[nwi] - base_week[nwi]), 1)
+                        if ev["next_gain"] <= 0:
+                            continue
+                    offer = {"give": [g], "fair": ev["fair"], "p_accept": ev["p_accept"], "my_gain": ev["my_gain"],
+                             "their_gain": ev["their_gain"], "next_gain": ev.get("next_gain")}
+                    break
+            why = []
+            if kind == "ros":
+                why.append(f"Projected {r['pos']}{proj_rank} the rest of the way, priced like {r['pos']}{rk['val']}")
+                if r.get("sos_ros") and r["sos_ros"] > 1.04:
+                    why.append("Soft schedule ahead")
+            else:
+                why.append(f"Projects {wk(r, nxt):.1f} in Week {nxt} ({r['pos']}{proj_rank} that week), priced like {r['pos']}{rk['val']}")
+            u = r.get("usage") or {}
+            if u.get("exp_ppg") and u.get("ppg") and u["exp_ppg"] > u["ppg"] + 1.5:
+                why.append(f"Usage worth {u['exp_ppg']:.1f}/game vs {u['ppg']:.1f} scored, so production should catch up")
+            ir = r.get("inj_risk") or {}
+            if ir.get("level") == "High":
+                why.append("Note: high injury risk")
+            out[kind].append({"pid": pid, "team": tid, "proj_rank": proj_rank, "value_rank": rk["val"], "gap": gap,
+                              "proj": round(r.get("ros_ppg") or 0, 1) if kind == "ros" else round(wk(r, nxt), 1),
+                              "gain": round(gain_ros if kind == "ros" else gain_next, 2), "offer": offer, "why": why})
+    for kind in ("ros", "next"):
+        out[kind].sort(key=lambda x: -(x["gain"] * (1.0 if x["offer"] else 0.6) + 0.05 * x["gap"]))
+        out[kind] = out[kind][:limit]
+    return out

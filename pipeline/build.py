@@ -258,6 +258,10 @@ def main():
             data["buy_low"] = buys
             finder = trades.TradeFinder(S, P, strength, teams, me, prof)
             data["trades"] = finder.run([s["pid"] for s in sells])
+            data["proj_buys"] = trades.projection_buys(finder, owner_of, week)
+            for kind in ("ros", "next"):
+                for x in data["proj_buys"][kind]:
+                    lists.update([x["pid"]] + ((x.get("offer") or {}).get("give") or []))
             data["matchup_trades"] = finder.run_matchups((sim.get("me") or {}).get("games", []), data["trades"])
             for mt in data["matchup_trades"]:
                 for e in mt["trades"]:

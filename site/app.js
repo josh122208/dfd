@@ -254,6 +254,11 @@ function renderTrades(el) {
     if (!D.trades.length) h += `<div class="card empty">No trades clear the bar right now. Check back after this week's games.</div>`;
     D.trades.forEach((e) => { h += tradeCard(e); });
   }
+  if (D.proj_buys && (D.proj_buys.ros.length || D.proj_buys.next.length)) {
+    h += `<h2>Buy-low by projection</h2><p class="muted small">Players on other rosters projected to score more than their trade value says. Each comes with the cheapest fair 1-for-1 from your roster that still helps you.</p>
+      <div class="seg" id="pbseg"><button data-k="ros" class="on">Rest of season</button><button data-k="next">Week ${D.proj_buys.next_week}</button></div>
+      <div class="card" style="margin-top:10px"><div class="table-wrap" id="pbtable"></div></div>`;
+  }
   if (D.buy_low && D.buy_low.length) {
     h += `<h2>Buy-low targets around the league</h2><div class="card"><div class="table-wrap"><table>
       <tr><th>Player</th><th>Manager</th><th class="num">Market</th><th>Why buy</th></tr>
@@ -263,6 +268,19 @@ function renderTrades(el) {
   if (D.meta.mode === "public") h += marketTables();
   el.innerHTML = h || `<div class="empty">Trade tools need your ESPN league.</div>`;
   bindCopy(el);
+  if ($("#pbseg", el)) {
+    const draw = (k) => {
+      const list = D.proj_buys[k];
+      $("#pbtable", el).innerHTML = list.length ? `<table><tr><th>Player</th><th class="num">${k === "ros" ? "ROS pts/g" : "Wk " + D.proj_buys.next_week}</th><th class="num hide-sm">Proj vs price</th><th class="num">+ your lineup</th><th>Fair offer</th><th class="hide-sm">Why</th></tr>
+        ${list.map((x) => { const r = P[x.pid] || {}, o = x.offer;
+          return `<tr><td>${pn(x.pid)}<div class="pmeta">${esc(ownerName(x.team))} · value ${f0(r.value)}</div></td><td class="num">${f1(x.proj)}</td>
+          <td class="num hide-sm">${esc(r.pos)}${x.proj_rank} vs ${esc(r.pos)}${x.value_rank}</td><td class="num">${sign(x.gain)}${k === "ros" ? "/wk" : ""}</td>
+          <td class="small">${o ? `Give ${o.give.map((g) => pn(g)).join(" + ")}<div class="pmeta">${pct(o.fair)} value to them · ${pct(o.p_accept)} accept · ${sign(o.my_gain)}/wk for you${o.next_gain != null ? ` · ${sign(o.next_gain)} in Wk ${D.proj_buys.next_week}` : ""}</div>` : '<span class="muted">No clean 1-for-1: try the Offer Analyzer</span>'}</td>
+          <td class="small hide-sm">${x.why.map(esc).join("<br>")}</td></tr>`; }).join("")}</table>` : `<div class="empty">Nothing stands out right now.</div>`;
+    };
+    el.querySelectorAll("#pbseg button").forEach((b) => (b.onclick = () => { el.querySelectorAll("#pbseg button").forEach((x) => x.classList.toggle("on", x === b)); draw(b.dataset.k); }));
+    draw("ros");
+  }
 }
 const MSGS = [];
 function bindCopy(el) {
