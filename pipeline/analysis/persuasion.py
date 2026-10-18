@@ -63,9 +63,9 @@ def _flattering(pid, P):
     if u.get("carries_pg") and u["carries_pg"] >= 15:
         facts.append((2.0, f"{u['carries_pg']:.1f} carries a game"))
     if r.get("fp_ros_pos_rank") and r["fp_ros_pos_rank"] <= 30:
-        facts.append((1.8, f"FantasyPros has him {r['pos']}{round(r['fp_ros_pos_rank'])} rest of season"))
+        facts.append((1.8, f"a {r['pos']}{round(r['fp_ros_pos_rank'])} rest-of-season ranking from FantasyPros"))
     if r.get("fc_trend30") and r["fc_trend30"] > 150:
-        facts.append((1.6, "his trade value is up over the last month"))
+        facts.append((1.6, "trade value that's climbed over the last month"))
     if r.get("sos_ros") and r["sos_ros"] > 1.05:
         facts.append((1.5, "one of the easier schedules the rest of the way"))
     if u.get("ppg") and u["ppg"] >= 12:
@@ -178,7 +178,7 @@ def pitch(e, P, prof, teams, me, S):
             objections.append({"if": f"\"{r['name']} is always hurt\"",
                                "say": "He's playing now and the price reflects the risk. Offer a small add-on rather than "
                                       "arguing the injury history."})
-        if r.get("injury") in ("Q", "D"):
+        if r.get("injury") in ("Q", "D", "O"):
             objections.append({"if": f"\"Isn't {r['name']} hurt?\"",
                                "say": "Acknowledge it, then offer to wait until his status is clear, or add a small piece for the risk."})
     objections.append({"if": "\"I need more\"", "say": "Ask what specifically, then counter with your walk-away step. "
