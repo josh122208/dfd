@@ -16,6 +16,9 @@ import datetime as dt
 from ..model.projections import ordinal
 
 PLAYBOOK = [
+    {"name": "Make it a two-way fix", "how": "Every recommended trade puts a starter into their lineup and one into "
+     "yours. Name the player he'd replace and the numbers, then name the hole it fills for you. A trade that "
+     "obviously helps both sides doesn't need hard selling.", "source": "Need-based framing"},
     {"name": "Feed what they chase", "how": "Managers repeat themselves: the positions they ask for in trades and grab "
      "on waivers show what they believe they need. Offer that position and the deal sells itself.",
      "source": "League trade and waiver history"},
@@ -122,18 +125,36 @@ def pitch(e, P, prof, teams, me, S):
             tactics.append("Sell the box score")
             break
 
-    # 4. Fit in their lineup
-    if e["their_gain"] > 0.3:
-        lines.append(f"By my math he slots right into your starting lineup, about +{e['their_gain']:.1f} points a week for you.")
+    # 4. Fit in their lineup: name the player he'd replace, with the numbers.
+    def slot_name(slot):
+        return "flex" if slot in ("FLEX", "RB/WR", "WR/TE", "OP") else slot
+    fit = (e.get("fills_them") or [None])[0]
+    if fit:
+        r, over = P[fit["pid"]], P.get(fit["over"]) if fit.get("over") else None
+        if over:
+            lines.append(f"{r['name']} would start at {slot_name(fit['slot'])} for you over {over['name']} "
+                         f"({r.get('ros_ppg') or 0:.1f} vs {over.get('ros_ppg') or 0:.1f} projected pts a game).")
+        else:
+            lines.append(f"{r['name']} would go straight into your starting lineup at {slot_name(fit['slot'])}.")
         tactics.append("Lead with their need")
+    if e["their_gain"] > 0.3:
+        lines.append(f"By my math that's about +{e['their_gain']:.1f} points a week for your lineup.")
 
-    # 5. Honest reason (reciprocity)
-    get_pos = sorted({P[p]["pos"] for p in get})
-    if mine["need"] in get_pos:
+    # 5. Honest reason (reciprocity): the hole it fills for me, so it reads as a real two-way fix.
+    mine_fit = (e.get("fills_me") or [None])[0]
+    their_pos = {P[f["pid"]]["pos"] for f in e.get("fills_them") or []}
+    if mine_fit:
+        mpos = P[mine_fit["pid"]]["pos"]
+        if their_pos and mpos not in their_pos:
+            lines.append(f"I've got {'/'.join(sorted(their_pos))} depth and need a {mpos}, so this fixes a hole for both of us.")
+        else:
+            lines.append(f"It helps me at {slot_name(mine_fit['slot'])} too, so it works for both of us.")
+    elif mine["need"] in sorted({P[p]["pos"] for p in get}):
         lines.append(f"I'm thin at {mine['need']} and have depth where you need it, so it works for both of us.")
     else:
         lines.append("Trying to balance my roster a bit, and this seems like it helps us both.")
     tactics.append("Reciprocity")
+    tactics.append("Two-way fit")
 
     # 6. Choice
     alt = next((s for s in e.get("ladder") or [] if s["label"] == "Walk-away price"), None)

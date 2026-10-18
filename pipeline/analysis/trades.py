@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 
+from ..sources.espn import SLOT_ELIGIBLE
 from .lineup import phi
 from .persuasion import pitch
 
@@ -191,11 +192,44 @@ class TradeFinder:
             z -= 0.3
         if tend.get("dormant"):
             z -= 0.3
+        # Both sides should fill a hole: someone each team receives must crack its starting lineup.
+        fills_them = [f for f in (self._starts(th_new, p) for p in give) if f]
+        fills_me = [f for f in (self._starts(my_new, p) for p in get) if f]
+        mutual = th_gain >= 0.1 and my_gain > 0 and bool(fills_them) and bool(fills_me)
+        if mutual:
+            z += 0.4  # a deal that visibly fixes their lineup is an easier yes
         p_accept = 1 / (1 + math.exp(-z))
         return {"team": tid, "give": list(give), "get": list(get), "my_gain": round(my_gain, 2),
                 "their_gain": round(th_gain, 2), "fair": round(fair, 3), "perception": round(perception, 2),
                 "p_accept": round(p_accept, 3), "give_value": round(give_v), "get_value": round(get_v),
-                "my_drops": my_drops, "their_drops": th_drops, "score": round(my_gain * p_accept, 3)}
+                "my_drops": my_drops, "their_drops": th_drops, "score": round(my_gain * p_accept, 3),
+                "fills_them": fills_them, "fills_me": fills_me, "mutual": mutual}
+
+    def _starts(self, roster, pid):
+        """If pid makes this roster's optimal lineup (by rest-of-season points per game), return
+        {"pid", "slot", "over"} where `over` is the player he pushes to the bench; else None."""
+        P, slots = self.P, self.S["slots"]
+        pos = P[pid]["pos"]
+
+        def ppg(p):
+            return P[p].get("ros_ppg") or 0
+        same = sorted([p for p in roster if P.get(p, {}).get("pos") == pos], key=ppg, reverse=True)
+        k = int(slots.get(pos, 0))
+        if pid in same[:k]:
+            return {"pid": pid, "slot": pos, "over": same[k] if len(same) > k else None}
+        flex = [s for s in ("RB/WR", "WR/TE", "FLEX", "OP") if slots.get(s) and pos in SLOT_ELIGIBLE[s]]
+        if not flex:
+            return None
+        elig = set().union(*(SLOT_ELIGIBLE[s] for s in flex))
+        n = sum(int(slots[s]) for s in flex)
+        left = []
+        for q in elig:
+            grp = sorted([p for p in roster if P.get(p, {}).get("pos") == q], key=ppg, reverse=True)
+            left += grp[int(slots.get(q, 0)):]
+        left.sort(key=ppg, reverse=True)
+        if pid in left[:n]:
+            return {"pid": pid, "slot": flex[0], "over": left[n] if len(left) > n else None}
+        return None
 
     def _my_candidates(self, sell_ids):
         mine = [p for p in self.teams[self.me]["pids"] if p in self.P and self.P[p]["pos"] in POS_GROUPS]
@@ -226,7 +260,7 @@ class TradeFinder:
                 continue
             for give, get in self._combos(tid, my_c):
                 ev = self.evaluate(tid, give, get)
-                if ev["my_gain"] >= 0.4 and 0.93 <= ev["fair"] <= 1.15 and ev["p_accept"] >= 0.3 and ev["their_gain"] >= -1.5:
+                if ev["mutual"] and ev["my_gain"] >= 0.4 and 0.93 <= ev["fair"] <= 1.15 and ev["p_accept"] >= 0.3:
                     results.append(ev)
         results.sort(key=lambda e: -e["score"])
         # Keep variety: no more than two offers per manager, and no player in more than three offers.
@@ -281,7 +315,7 @@ class TradeFinder:
             cands = []
             for give, get in self._combos(tid, my_c):
                 ev = self.evaluate(tid, give, get)
-                if not 0.93 <= ev["fair"] <= 1.15 or ev["their_gain"] < -0.5 or ev["my_gain"] < -0.3 or ev["p_accept"] < 0.35:
+                if not ev["mutual"] or not 0.93 <= ev["fair"] <= 1.15 or ev["p_accept"] < 0.35:
                     continue
                 my_new, _ = self._after(me_t["pids"], give, get, len(me_t["pids"]))
                 th_new, _ = self._after(th_t["pids"], get, give, len(th_t["pids"]))
@@ -367,7 +401,7 @@ class TradeFinder:
         opener = None
         for x in extras[:8]:
             ev = self.evaluate(tid, e["give"], e["get"] + [x])
-            if 0.88 <= ev["fair"] < e["fair"] - 0.02 and ev["my_gain"] >= e["my_gain"]:
+            if ev["mutual"] and 0.88 <= ev["fair"] < e["fair"] - 0.02 and ev["my_gain"] >= e["my_gain"]:
                 opener = ev
                 break
         if opener:
@@ -380,7 +414,7 @@ class TradeFinder:
                        and self.P[p]["pos"] in POS_GROUPS], key=self._value)
         for x in (adds if e["fair"] < 1.05 else []):
             ev = self.evaluate(tid, e["give"] + [x], e["get"])
-            if ev["my_gain"] > 0.2 and e["fair"] + 0.04 < ev["fair"] <= 1.2:
+            if ev["mutual"] and ev["my_gain"] > 0.2 and e["fair"] + 0.04 < ev["fair"] <= 1.2:
                 steps.append({"label": "Walk-away price", "give": ev["give"], "get": ev["get"], "fair": ev["fair"],
                               "my_gain": ev["my_gain"],
                               "note": "Add this only after they counter. Past this, the trade stops helping you."})
@@ -507,7 +541,7 @@ def projection_buys(finder, owner_of, week, limit=12):
             offer = None
             for g in my_side:
                 ev = finder.evaluate(tid, (g,), (pid,))
-                if 0.93 <= ev["fair"] <= 1.15 and ev["my_gain"] > 0 and ev["p_accept"] >= 0.3:
+                if ev["mutual"] and 0.93 <= ev["fair"] <= 1.15 and ev["p_accept"] >= 0.3:
                     if kind == "next":
                         mine_after, _ = finder._after(my_pids, (g,), (pid,), len(my_pids))
                         ev["next_gain"] = round(float(st.weekly(mine_after)[nwi] - base_week[nwi]), 1)
@@ -572,8 +606,7 @@ def buy_sell_board(finder, owner_of, buys, sells, per_player=2):
                 if tp <= 0 or not 0.85 <= gp / tp <= 1.25:
                     continue
                 ev = finish(finder.evaluate(tid, give, get), give, get)
-                if 0.95 <= ev["fair_perceived"] <= 1.12 and ev["my_gain"] > 0 and ev["their_gain"] >= -1.5 \
-                        and ev["p_accept"] >= 0.3:
+                if ev["mutual"] and 0.95 <= ev["fair_perceived"] <= 1.12 and ev["p_accept"] >= 0.3:
                     res.append(ev)
         res.sort(key=lambda e: -(e["my_gain"] + e["true_edge"] / 1500) * e["p_accept"])
         picked, used = [], set()
