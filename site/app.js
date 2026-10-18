@@ -69,7 +69,7 @@ function start(data) {
   };
   document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => show(b.dataset.v)));
   banners();
-  const views = { week: renderWeek, trades: renderTrades, board: renderBoard, matchups: renderMatchups, waivers: renderWaivers, analyzer: renderAnalyzer,
+  const views = { week: renderWeek, trades: renderTrades, updates: renderUpdates, board: renderBoard, matchups: renderMatchups, waivers: renderWaivers, analyzer: renderAnalyzer,
     playoffs: renderPlayoffs, league: renderLeague, players: renderPlayers, playbook: renderPlaybook, connect: renderConnect };
   for (const [k, fn] of Object.entries(views)) {
     const fail = (e) => { $("#v-" + k).innerHTML = `<div class="banner bad">This tab failed to render: ${esc(e.message)}</div>`; console.error(e); };
@@ -337,6 +337,69 @@ function marketTables() {
     </table></div></div>`;
   return t("Buy: model likes more than the market", under, "Usage, schedule and projections say these players are worth more than their trade price.")
     + t("Sell: market likes more than the model", over, "Their trade price is running ahead of their projected production.");
+}
+
+/* ---------- Updates: news + model impact ---------- */
+function ago(iso) {
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 60) return `${m}m ago`;
+  if (m < 1440) return `${Math.round(m / 60)}h ago`;
+  return `${Math.round(m / 1440)}d ago`;
+}
+function trend(pid) {
+  const h = (D.history || {})[pid];
+  if (!h || h.length < 2) return "";
+  const v = h.map((x) => x[1]), lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
+  const pts = v.map((y, i) => `${(i / (v.length - 1)) * 60},${18 - ((y - lo) / span) * 16}`).join(" ");
+  const col = v[v.length - 1] >= v[0] ? "var(--good)" : "var(--bad)";
+  return `<svg width="60" height="20" viewBox="0 0 60 20" style="vertical-align:middle"><polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.5"/></svg>`;
+}
+function deltaChip(x, unit = "") {
+  if (x == null || Math.abs(x) < (unit ? 0.05 : 1)) return "";
+  const cls = x > 0 ? "good" : "bad";
+  return `<span class="chip ${cls}">${x > 0 ? "+" : ""}${unit ? Number(x).toFixed(1) : f0(x)}${unit}</span>`;
+}
+function impact(pid, key = "delta") {
+  const r = P[pid];
+  if (!r) return "";
+  const d = r[key];
+  const parts = [`Value <b>${f0(r.value)}</b> ${d ? deltaChip(d.value) : ""}`, `ROS <b>${f1(r.ros_ppg)}</b> pts/g ${d ? deltaChip(d.ros_ppg, "") : ""}`];
+  if (d && d.proj != null && Math.abs(d.proj) >= 0.5) parts.push(`This week <b>${f1(r.proj)}</b> ${deltaChip(d.proj, "")}`);
+  const why = [];
+  if (d && d.injury) why.push(`status ${d.injury[0] || "healthy"} → ${d.injury[1] || "healthy"}`);
+  if (d && d.fc && Math.abs(d.fc) >= 100) why.push(`market ${d.fc > 0 ? "+" : ""}${f0(d.fc)}`);
+  if (d && d.fp && Math.abs(d.fp) >= 100) why.push(`experts ${d.fp > 0 ? "+" : ""}${f0(d.fp)}`);
+  if (d && d.model && Math.abs(d.model) >= 100) why.push(`our model ${d.model > 0 ? "+" : ""}${f0(d.model)}`);
+  return `<div class="small" style="margin-top:4px">${pn(pid)} ${trend(pid)}<div class="pmeta">${parts.join(" · ")}${why.length ? ` · <i>${why.map(esc).join(", ")}</i>` : ""}</div></div>`;
+}
+function renderUpdates(el) {
+  const F = D.news_feed || [], M = D.movers || {};
+  const myIds = new Set(((D.teams || []).find((t) => t.id === ME) || {}).pids || []);
+  let filter = "all", window_ = "delta";
+  const keep = (f) => filter === "all" || f.pids.some((p) => (filter === "mine" ? myIds.has(p) : filter === "fa" ? P[p] && P[p].on_team == null : P[p] && P[p].on_team != null));
+  const draw = () => {
+    const mv = M[window_] || { up: [], down: [] };
+    const moverRows = (ids) => ids.filter((p) => P[p]).map((p) => {
+      const r = P[p], d = r[window_], head = ((r.news || {}).items || [])[0];
+      return `<tr><td>${pn(p)}${r.on_team === ME ? ' <span class="chip acc">yours</span>' : ""}${head ? `<div class="pmeta">📰 ${esc(head.headline).slice(0, 110)}</div>` : ""}</td><td class="num">${deltaChip(d.value)}</td><td class="num hide-sm">${f0(r.value)}</td><td class="hide-sm">${trend(p)}</td></tr>`;
+    }).join("") || `<tr><td colspan="4" class="empty">No big moves.</td></tr>`;
+    const since = window_ === "delta" ? (D.meta_prev ? `since the last update (${ago(D.meta_prev)})` : "") : "over the past week";
+    el.innerHTML = `<h2>What changed</h2>
+      ${!D.meta_prev ? `<div class="banner info">Change tracking starts with the next update: each run compares against the one before it, and builds up a value history for every player.</div>` : ""}
+      <div class="seg" id="mvseg"><button data-k="delta" class="${window_ === "delta" ? "on" : ""}">Since last update</button><button data-k="delta7" class="${window_ === "delta7" ? "on" : ""}">Past week</button></div>
+      <p class="muted small">Biggest trade-value moves ${since}, with the latest headline.</p>
+      <div class="grid"><div class="card"><h3>📈 Rising</h3><div class="table-wrap"><table>${moverRows(mv.up)}</table></div></div>
+      <div class="card"><h3>📉 Falling</h3><div class="table-wrap"><table>${moverRows(mv.down)}</table></div></div></div>
+      <h2>Latest news</h2>
+      <div class="seg" id="nfseg">${[["all", "All"], ["mine", "My team"], ["rostered", "Rostered"], ["fa", "Free agents"]].map(([k, l]) => `<button data-k="${k}" class="${k === filter ? "on" : ""}">${l}</button>`).join("")}</div>
+      <p class="muted small">Each story is matched to the player it's about. Under it: his trade value and projection now, how they moved, and what drove the move (injury status, market, experts, our model).</p>
+      ${F.filter(keep).slice(0, 80).map((f) => `<div class="card"><div class="row"><span class="pmeta">${ago(f.published)}</span>${f.pids.some((p) => myIds.has(p)) ? '<span class="chip acc">your player</span>' : ""}</div>
+        <h3 style="margin:4px 0">${esc(f.headline)}</h3>${f.story ? `<p class="small" style="margin:0 0 4px">${esc(f.story)}</p>` : ""}
+        ${f.pids.filter((p) => P[p]).map((p) => impact(p)).join("")}</div>`).join("") || '<div class="card empty">No recent news for this filter.</div>'}`;
+    el.querySelectorAll("#mvseg button").forEach((b) => (b.onclick = () => { window_ = b.dataset.k; draw(); }));
+    el.querySelectorAll("#nfseg button").forEach((b) => (b.onclick = () => { filter = b.dataset.k; draw(); }));
+  };
+  draw();
 }
 
 /* ---------- Buy/Sell board ---------- */

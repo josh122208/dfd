@@ -183,7 +183,7 @@ def main():
             and (p.get("rostered") or (p.get("fc_value") or 0) >= 400 or (p.get("fp_ros_overall") or 999) <= 220)}
     others = [(p.get("name"), p.get("team")) for p in reg.players.values()
               if p.get("pos") in ("QB", "RB", "WR", "TE", "K") and p.get("name")]
-    S["news"] = safe(lambda: news.player_news(want, ctx, others), {}, "player news")
+    S["news"], news_feed = safe(lambda: news.player_news(want, ctx, others), ({}, []), "player news")
     status["coach_news"] = f"{len(S['news'])} players" if S["news"] else "unavailable"
     team_news = safe(lambda: news.team_news(set(sched.team), ctx), {}, "team news")
     P = projections.project(S)
@@ -316,6 +316,7 @@ def main():
     # Publish everyone fantasy-relevant, plus anyone referenced above.
     keep = {pid for pid, r in P.items() if pid in lists or r.get("on_team") is not None or (r.get("vorp") or 0) > 0
             or (r.get("proj") or 0) >= 4 or (r.get("value") or 0) >= 300}
+    track_changes(data, P, keep, load_previous(cfg), news_feed, owner_of, me)
     data["players"] = {pid: _public(P[pid]) for pid in keep}
     data["teams"] = [{"id": tm["id"], "name": tm["name"], "owner": tm.get("owner"), "abbrev": tm.get("abbrev"),
                       "record": f"{tm['wins']}-{tm['losses']}" + (f"-{tm['ties']}" if tm["ties"] else ""),
@@ -355,6 +356,64 @@ def main():
         log.info("wrote data.json (%d KB)", len(payload) // 1024)
     log.info("done in %.1fs: %d players, mode=%s, week=%s", time.time() - started, len(data["players"]),
              data["meta"]["mode"], week)
+
+
+def load_previous(cfg):
+    """The last published data (downloaded by the workflow into PREV_DATA), for change tracking."""
+    path = os.environ.get("PREV_DATA")
+    if not path or not os.path.exists(path) or os.path.getsize(path) < 100:
+        return None
+    try:
+        raw = open(path).read()
+        if '"ct"' in raw[:200] and cfg.site_password:
+            raw = crypto.decrypt(raw, cfg.site_password)
+        return json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        log.warning("previous data unreadable: %s", e)
+        return None
+
+
+def track_changes(data, P, keep, prev, feed, owner_of, me):
+    """Value history per player, change since the last update and over ~7 days, the news feed with each
+    story's model impact, and the biggest movers."""
+    today = dt.date.today()
+    prev_players = (prev or {}).get("players", {})
+    prev_hist = (prev or {}).get("history", {})
+    since = ((prev or {}).get("meta") or {}).get("generated")
+    history = {}
+    for pid in keep:
+        r = P[pid]
+        h = [x for x in prev_hist.get(pid, []) if x[0] != today.isoformat()][-20:]
+        h.append([today.isoformat(), r.get("value") or 0, r.get("ros_ppg") or 0])
+        history[pid] = h
+        pp = prev_players.get(pid)
+        if pp:
+            d = {"value": (r.get("value") or 0) - (pp.get("value") or 0),
+                 "ros_ppg": round((r.get("ros_ppg") or 0) - (pp.get("ros_ppg") or 0), 2),
+                 "proj": round((r.get("proj") or 0) - (pp.get("proj") or 0), 1) if pp.get("opp") == r.get("opp") else None,
+                 "fc": (r.get("fc_value") or 0) - (pp.get("fc_value") or 0) if pp.get("fc_value") and r.get("fc_value") else None,
+                 "fp": (r.get("fp_value") or 0) - (pp.get("fp_value") or 0) if pp.get("fp_value") and r.get("fp_value") else None,
+                 "model": (r.get("model_value") or 0) - (pp.get("model_value") or 0),
+                 "since": since}
+            if (pp.get("injury") or None) != (r.get("injury") or None):
+                d["injury"] = [pp.get("injury"), r.get("injury")]
+            r["delta"] = d
+        old = [x for x in h[:-1] if (today - dt.date.fromisoformat(x[0])).days >= 6]
+        if old:
+            o = old[-1]
+            r["delta7"] = {"value": (r.get("value") or 0) - o[1], "ros_ppg": round((r.get("ros_ppg") or 0) - o[2], 2),
+                           "since": o[0]}
+    data["history"] = history
+    # News feed: stories about published players, each with that player's model impact attached on the site.
+    data["news_feed"] = [f for f in feed if any(p in keep for p in f["pids"])][:150]
+    rel = [pid for pid in keep if owner_of.get(pid) is not None or (P[pid].get("value") or 0) >= 1000]
+    movers = {}
+    for key in ("delta", "delta7"):
+        ch = [(pid, P[pid][key]["value"]) for pid in rel if P[pid].get(key) and abs(P[pid][key]["value"]) >= 150]
+        ch.sort(key=lambda x: x[1])
+        movers[key] = {"up": [p for p, v in reversed(ch) if v > 0][:12], "down": [p for p, v in ch if v < 0][:12]}
+    data["movers"] = movers
+    data["meta_prev"] = since
 
 
 def season_report(me_sim, my_pids, P, strength, reg_weeks, prof, byes):
@@ -419,7 +478,7 @@ def _attach_espn(p, e, keep=False):
 PUBLIC = ("pid", "name", "pos", "team", "age", "headshot", "opp", "home", "implied", "spread", "proj", "floor", "ceil",
           "sd", "sources", "notes", "injury", "injury_detail", "injury_notes", "locked", "actual", "kickoff", "weather",
           "bye", "bye_week", "ros", "ros_pts", "ros_ppg", "playoff_pts", "sos_ros", "vorp", "value", "value_sources", "perceived",
-          "fc_value", "fp_value",
+          "fc_value", "fp_value", "delta", "delta7",
           "fc_trend30", "model_value", "edge", "fp_ros_overall", "fp_ros_pos_rank", "fp_week_rank", "pct_owned",
           "pct_change", "season_pts", "pts_rank", "ros_rank", "week_rank", "on_team", "slot", "usage", "depth",
           "inj_risk", "handcuff", "news")

@@ -34,6 +34,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
+      - name: Fetch last published data (for change tracking)
+        run: |
+          SITE="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/data"
+          curl -sfL "$SITE/data.enc.json" -o prev.json || curl -sfL "$SITE/data.json" -o prev.json || true
+          ls -la prev.json 2>/dev/null || echo "no previous data yet"
       - name: Build data
         env:
           ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
@@ -41,6 +46,7 @@ jobs:
           ESPN_SWID: ${{ secrets.ESPN_SWID }}
           MY_TEAM_ID: ${{ secrets.MY_TEAM_ID }}
           SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          PREV_DATA: prev.json
         run: python -m pipeline.build --out site/data
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
