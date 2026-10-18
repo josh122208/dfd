@@ -19,6 +19,14 @@ def _str_id(x):
         return str(x)
 
 
+def _same_person(a, b):
+    """Loose name check: same last name (after normalization), or one full name contains the other."""
+    na, nb = norm_name(a), norm_name(b)
+    if not na or not nb:
+        return True
+    return na.split(" ")[-1] == nb.split(" ")[-1] or na in nb or nb in na
+
+
 class Registry:
     """Master player list keyed by `pid` (the nflverse gsis_id, or DST_<TEAM> for defenses)."""
 
@@ -80,7 +88,10 @@ class Registry:
         for key, table in ((_str_id(espn_id), self.by_espn), (_str_id(sleeper_id), self.by_sleeper),
                            (_str_id(fp_id), self.by_fp)):
             if key and key in table:
-                return table[key]
+                hit = table[key]
+                # ID crosswalks occasionally point at the wrong person: require the last names to agree.
+                if not name or _same_person(name, self.players.get(hit, {}).get("name")):
+                    return hit
         if name and pos:
             pid = self.by_name.get((norm_name(name), pos))
             if pid:

@@ -31,16 +31,17 @@ jobs:
           print("FC rows", len(fc), "value range", fc.fc_value.max(), fc.fc_value.min())
           print(fc.sort_values("fc_value", ascending=False).head(15)[["fc_name","pos","fc_value","fc_rank"]].to_string())
           print(fc.sort_values("fc_value").head(8)[["fc_name","pos","fc_value","fc_rank"]].to_string())
-          rows = sorted([r for r in P.values() if r["pos"] in ("QB","RB","WR","TE")], key=lambda r: -(r.get("fc_value") or 0))
-          print("%-24s %-3s %7s %4s %6s %6s %7s %6s %6s %s" % ("name","pos","fc","est","fpOvr","fpPos","model","rosppg","vorp","team"))
+          rows = sorted([r for r in P.values() if r["pos"] in ("QB","RB","WR","TE")], key=lambda r: -(r.get("value") or 0))
+          print("%-24s %-3s %7s %7s %7s %7s %6s %s" % ("name","pos","VALUE","fc","fp","model","fpOvr","team"))
           def line(r):
-              return "%-24s %-3s %7.0f %4s %6s %6s %7.0f %6.1f %6.1f %s" % (r["name"][:24], r["pos"], r.get("fc_value") or 0, "E" if r.get("fc_estimated") else "", r.get("fp_ros_overall") or "", r.get("fp_ros_pos_rank") or "", r.get("model_value") or 0, r.get("ros_ppg") or 0, r.get("vorp") or 0, "mine" if r.get("on_team")==d["meta"]["me"] else ("FA" if r.get("on_team") is None else ""))
-          for r in rows[:70]: print(line(r))
+              return "%-24s %-3s %7.0f %7.0f %7.0f %7.0f %6s %s" % (r["name"][:24], r["pos"], r.get("value") or 0, r.get("fc_value") or 0, r.get("fp_value") or 0, r.get("model_value") or 0, r.get("fp_ros_overall") or "", "mine" if r.get("on_team")==d["meta"]["me"] else ("FA" if r.get("on_team") is None else ""))
+          for r in rows[:45]: print(line(r))
+          print("trades:", [(e["fair"], round(e["my_gain"], 2), e["give_value"], e["get_value"]) for e in d.get("trades", [])])
+          print("Quitoriano:", [line(r) for r in rows if "Quitoriano" in r["name"]])
           print("--- my roster")
           for r in rows:
               if r.get("on_team") == d["meta"]["me"]: print(line(r))
-          print("--- estimated sample")
-          for r in [r for r in rows if r.get("fc_estimated")][:25]: print(line(r))
+
           PY
           git config user.name diag-bot && git config user.email diag@users.noreply.github.com
           git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f tb.txt && git commit -qm tb && git push -qf origin diag-out
