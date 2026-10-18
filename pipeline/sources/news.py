@@ -102,10 +102,22 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
                 other = True
         return found or (["?"] if other else [])
 
-    def is_coach(sentence):
+    speech = re.compile(r"\b(said|says|saying|told|tells|noted|added|indicated|expects?|expected|confirmed|announced|"
+                        r"mentioned|hinted|praised|called|described|explained|according to|believes?|wants?|plans?|"
+                        r"stated|revealed|acknowledged|admitted|insisted|stressed|emphasized|suggested|declined to|"
+                        r"wouldn't|won't commit|ruled|listed|declared|updated|relayed|optimistic|hopeful)\b", re.I)
+
+    def is_coach(sentence, team):
+        """The player's own coach (or a coach/coordinator by title) saying or judging something."""
         low = sentence.lower()
-        return bool(re.search(r"\bcoach|coordinator|play-?caller", low)) or any(
-            c and re.search(r"\b" + re.escape(c) + r"\b", low) for c in coach_last)
+        c = (coach_of.get(team) or {}).get("coach") or ""
+        own = c and (c.lower() in low or re.search(r"\b" + re.escape(c.split(" ")[-1].lower()) + r"\b", low))
+        titled = re.search(r"\b(head coach|coach|coordinator|play-?caller|oc)\b", low)
+        if not (own or titled):
+            return False
+        if re.search(r"coaching (tenure|career|staff history)|coach(es)?'s? (teams|system|scheme|offense)\b", low) and not own:
+            return False
+        return bool(speech.search(sentence))
 
     seen_items, quotes, items = set(), {}, {}
     for fetched_for, feed in feeds:
@@ -124,19 +136,18 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
             date = when.date().isoformat()
             head = _clean(f.get("headline") or "")
             body = _clean(f.get("story") or f.get("description") or "")
-            subject = mentions(head, team)
-            for pid in subject:
+            prev = mentions(head, team)
+            for pid in prev:
                 if pid != "?":
                     items.setdefault(pid, []).append({"date": date, "headline": head})
             for sent in _sentences(body):
                 named = mentions(sent, team)
-                if named:
-                    subject = named
-                if not is_coach(sent):
-                    continue
+                # "He"/"his" only refers back to the player named in the sentence right before.
+                targets = named or (prev if re.search(r"\b(he|his|him)\b", sent, re.I) else [])
+                prev = named
                 a, b = _score(sent)
-                for pid in (named or subject):
-                    if pid == "?":
+                for pid in targets:
+                    if pid == "?" or not is_coach(sent, players[pid].get("team")):
                         continue
                     quotes.setdefault(pid, []).append({"date": date, "text": sent[:280], "tone": (a > b) - (a < b),
                                                        "pos": a, "neg": b})
