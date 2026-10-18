@@ -23,6 +23,18 @@ jobs:
           PREV_DATA=prev.json python -m pipeline.build --out out > all.log 2>&1; echo "exit $?" > tb.txt
           ls -la prev.json >> tb.txt 2>&1
           sed -n '/Traceback/,$p' all.log | tail -30 >> tb.txt
+          python3 - >> tb.txt 2>&1 <<'PY'
+          import json, os
+          from pipeline import crypto
+          d = json.loads(crypto.decrypt(open("out/data.enc.json").read(), os.environ["SITE_PASSWORD"]))
+          P = d["players"]
+          print("prev:", d.get("meta_prev"), "| feed:", len(d.get("news_feed", [])), "| deltas:", sum(1 for r in P.values() if r.get("delta")))
+          for f in d.get("news_feed", [])[:6]:
+              print(" -", f["published"][:16], "|", ", ".join(P[p]["name"] for p in f["pids"] if p in P), "|", f["headline"][:110])
+          m = d.get("movers", {}).get("delta", {})
+          print("up:", [(P[p]["name"], P[p]["delta"]["value"]) for p in m.get("up", [])[:5]])
+          print("down:", [(P[p]["name"], P[p]["delta"]["value"]) for p in m.get("down", [])[:5]])
+          PY
           grep -E "ERROR|espn league|player news|Traceback|Error|done in|source failed" all.log | sed -E 's/\{[0-9A-Fa-f-]{30,}\}/{SWID}/g' | cut -c1-220 | tail -25 >> tb.txt
           git config user.name diag-bot && git config user.email diag@users.noreply.github.com
           git checkout -q --orphan diag-out && git rm -rqf --cached . && git add -f tb.txt && git commit -qm tb && git push -qf origin diag-out

@@ -121,7 +121,7 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
             return False
         return bool(speech.search(sentence))
 
-    seen_items, quotes, items, feed = set(), {}, {}, []
+    seen_items, quotes, items, stories = set(), {}, {}, []
     for fetched_for, feed in feeds:
         team = players[fetched_for].get("team")
         for f in feed:
@@ -146,7 +146,7 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
             about = [p for p in prev if p != "?"] or [p for p in mentions(" ".join(_sentences(body)[:1]), team) if p != "?"]
             if about and when >= dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7):
                 snippet = " ".join(_sentences(body)[:2])
-                feed.append({"published": when.isoformat(), "headline": head,
+                stories.append({"published": when.isoformat(), "headline": head,
                              "story": snippet[:420] + ("…" if len(snippet) > 420 else ""), "pids": about[:3]})
             for sent in _sentences(body):
                 named = mentions(sent, team)
@@ -173,8 +173,8 @@ def player_news(players, coach_of, other_names=(), max_age=3 * 3600, days=21, wo
                     "signal": round(signal, 2), "items": sorted(items.get(pid, []), key=lambda i: i["date"], reverse=True)[:4]}
     log.info("player news: %d items pooled; %d players with news, %d with coach quotes", len(seen_items), len(out),
              sum(1 for v in out.values() if v["quotes"]))
-    feed.sort(key=lambda f: f["published"], reverse=True)
-    return out, feed[:200]
+    stories.sort(key=lambda f: f["published"], reverse=True)
+    return out, stories[:200]
 
 
 def team_news(teams, coach_of, max_age=3 * 3600, days=10):

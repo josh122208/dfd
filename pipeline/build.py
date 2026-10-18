@@ -405,7 +405,7 @@ def track_changes(data, P, keep, prev, feed, owner_of, me):
                            "since": o[0]}
     data["history"] = history
     # News feed: stories about published players, each with that player's model impact attached on the site.
-    data["news_feed"] = [f for f in feed if any(p in keep for p in f["pids"])][:150]
+    data["news_feed"] = [f for f in feed if any(p in keep for p in f.get("pids", []))][:150]
     rel = [pid for pid in keep if owner_of.get(pid) is not None or (P[pid].get("value") or 0) >= 1000]
     movers = {}
     for key in ("delta", "delta7"):
