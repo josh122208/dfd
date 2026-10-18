@@ -86,6 +86,9 @@ def compute(players, S):
         parts = [(w, v) for w, v in parts if v]
         if not parts:
             r["value"] = 0
+        elif len(parts) == 1 and r.get("model_value") and not r.get("fc_value") and not r.get("fp_value"):
+            # Only our model rates him (no market, no experts): don't let it set his price alone.
+            r["value"] = round(0.6 * r["model_value"])
         else:
             r["value"] = round(sum(w * v for w, v in parts) / sum(w for w, _ in parts))
         r["value_sources"] = {k: r.get(k) for k in ("fc_value", "fp_value", "model_value") if r.get(k)}
